@@ -17,13 +17,15 @@ A production-ready Go library for building voice-powered applications with plugg
 
 ## Installation
 
-```bashlokutor-
-go get github.com/team-hashing/orchestrator
+```bash
+go get github.com/team-hashing/lokutor-orchestrator
 ```
 
 ## Quick Start
 
-### Basic Usage
+### Using the Conversation API (Recommended)
+
+The `Conversation` API is the easiest way to build voice applications. It handles session management, context, and provides a simple interface for common patterns.
 
 ```go
 package main
@@ -40,36 +42,160 @@ func main() {
 	llm := MyLLMProvider{}
 	tts := MyTTSProvider{}
 
-	// Create orchestrator
-	orch := orchestrator.New(stt, llm, tts, orchestrator.DefaultConfig())
+	// Create a conversation with defaults
+	conv := orchestrator.NewConversation(stt, llm, tts)
 
-	// Process audio
-	session := orchestrator.NewConversationSession("user_123")
-	transcript, audioBytes, err := orch.ProcessAudio(
-		context.Background(),
-		session,
-		rawAudioData,
-	)
+	// Set system prompt to guide the LLM
+	conv.SetSystemPrompt("You are a helpful voice assistant. Be concise and friendly.")
 
-	log.Printf("User said: %s", transcript)
-	log.Printf("Agent responded with %d bytes of audio", len(audioBytes))
+	// Set preferred voice and language
+	conv.SetVoice(orchestrator.VoiceM1)
+	conv.SetLanguage(orchestrator.LanguageEn)
+
+	ctx := context.Background()
+
+	// Chat with text
+	response, err := conv.Chat(ctx, "Hello! What's the weather today?", func(chunk []byte) error {
+		// Stream audio chunks to speaker
+		return sendToSpeaker(chunk)
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Printf("Assistant said: %s", response)
 }
 ```
 
-### Streaming TTS Output
+### Processing Audio Input
 
 ```go
+// Process audio (handles STT -> LLM -> TTS)
+transcript, response, err := conv.ProcessAudio(
+	context.Background(),
+	audioBytes,
+	func(chunk []byte) error {
+		// Handle audio chunk
+		return sendToSpeaker(chunk)
+	},
+)
+
+if err != nil {
+	log.Fatal(err)
+}
+
+log.Printf("User said: %s", transcript)
+log.Printf("Assistant responded: %s", response)
+```
+
+### Low-Level Orchestrator API
+
+For advanced use cases where you need fine-grained control, use the `Orchestrator` directly:
+
+```go
+// Create orchestrator directly
+orch := orchestrator.New(stt, llm, tts, orchestrator.DefaultConfig())
+
+// Create and manage sessions manually
 session := orchestrator.NewConversationSession("user_123")
 
-orch.ProcessAudioStream(
+// Process audio
+transcript, audioBytes, err := orch.ProcessAudio(
 	context.Background(),
 	session,
 	rawAudioData,
+)
+
+// Stream TTS output
+err = orch.SynthesizeStream(
+	context.Background(),
+	"Hello world",
+	orchestrator.VoiceF2,
 	func(chunk []byte) error {
-		// Stream audio chunk to client
 		return sendToWebSocket(chunk)
 	},
 )
+```
+
+## Conversation API Reference
+
+The `Conversation` type provides a high-level, user-friendly API:
+
+### Creating Conversations
+
+```go
+// Create with default configuration
+conv := orchestrator.NewConversation(stt, llm, tts)
+
+// Create with custom configuration
+config := orchestrator.DefaultConfig()
+config.VoiceStyle = orchestrator.VoiceM3
+config.MaxContextMessages = 50
+conv := orchestrator.NewConversationWithConfig(stt, llm, tts, config)
+```
+
+### Configuring Conversation Settings
+
+```go
+// Set voice (F1-F5, M1-M5)
+conv.SetVoice(orchestrator.VoiceM2)
+// or
+conv.SetVoiceByString("M2")
+
+// Set language (en, es, fr, de, it, pt, ja, zh)
+conv.SetLanguage(orchestrator.LanguageEn)
+// or
+conv.SetLanguageByString("es")
+
+// Set system prompt to guide LLM behavior
+conv.SetSystemPrompt("You are a helpful customer service agent. Be concise and professional.")
+```
+
+### Conversation Modes
+
+```go
+// Text + Voice: Send text, get voice response with TTS streaming
+response, err := conv.Chat(ctx, "What's the capital of France?", func(chunk []byte) error {
+	return streamToSpeaker(chunk)
+})
+
+// Audio: Send audio, get text and voice response
+transcript, response, err := conv.ProcessAudio(ctx, audioBytes, func(chunk []byte) error {
+	return streamToSpeaker(chunk)
+})
+
+// Text only: No TTS, just get text response (useful for debugging)
+response, err := conv.TextOnly(ctx, "What's 2+2?")
+```
+
+### Managing Conversation Context
+
+```go
+// Get full conversation history
+messages := conv.GetContext()
+
+// Get specific messages
+lastUser := conv.GetLastUserMessage()
+lastAssistant := conv.GetLastAssistantMessage()
+
+// Clear conversation but keep system prompt
+conv.ClearContext()
+
+// Reset everything to fresh state
+conv.Reset()
+```
+
+### Introspection
+
+```go
+// Get session ID
+sessionID := conv.GetSessionID()
+
+// Get provider information
+providers := conv.GetProviders() // {"stt": "...", "llm": "...", "tts": "..."}
+
+// Get current configuration
+config := conv.GetConfig()
 ```
 
 ## Creating Custom Providers
