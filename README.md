@@ -1,9 +1,9 @@
 # Lokutor Orchestrator
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/lokutorTTS/lokutor-orchestrator.svg)](https://pkg.go.dev/github.com/lokutorTTS/lokutor-orchestrator)
+[![Go Reference](https://pkg.go.dev/badge/github.com/team-hashing/lokutor-orchestrator.svg)](https://pkg.go.dev/github.com/team-hashing/lokutor-orchestrator)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tests](https://img.shields.io/badge/Tests-10%2F10-brightgreen)](./TESTING.md)
-[![Go Report Card](https://goreportcard.com/badge/github.com/lokutorTTS/lokutor-orchestrator)](https://goreportcard.com/report/github.com/lokutorTTS/lokutor-orchestrator)
+[![Go Report Card](https://goreportcard.com/badge/github.com/team-hashing/lokutor-orchestrator)](https://goreportcard.com/report/github.com/team-hashing/lokutor-orchestrator)
 
 A production-ready Go library for building voice-powered applications with pluggable providers for STT (Speech-to-Text), LLM (Language Model), and TTS (Text-to-Speech).
 
@@ -18,7 +18,7 @@ A production-ready Go library for building voice-powered applications with plugg
 ## Installation
 
 ```bashlokutor-
-go get github.com/lokutorTTS/orchestrator
+go get github.com/team-hashing/orchestrator
 ```
 
 ## Quick Start
@@ -31,7 +31,7 @@ package main
 import (
 	"context"
 	"log"
-	"github.com/lokutorTTS/lokutor-orchestrator"
+	"github.com/team-hashing/lokutor-orchestrator"
 )
 
 func main() {

@@ -23,4 +23,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for 10 voice styles (F1-F5, M1-M5)
 - Support for 8 languages (en, es, fr, de, it, pt, ja, zh)
 
-[1.0.0]: https://github.com/lokutorTTS/go-voice-agent/releases/tag/v1.0.0
+[1.0.0]: https://github.com/team-hashing/go-voice-agent/releases/tag/v1.0.0

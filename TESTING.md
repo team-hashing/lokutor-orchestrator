@@ -14,7 +14,7 @@ A production-ready, standalone Go library for building voice-powered application
 
 ```
 /lib/orchestrator/
-├── go.mod                   # Module definition (github.com/lokutorTTS/orchestrator)
+├── go.mod                   # Module definition (github.com/team-hashing/orchestrator)
 ├── types.go                 # Core interfaces and types
 ├── types_test.go            # Types tests
 ├── orchestrator.go          # Main orchestrator implementation
@@ -95,14 +95,14 @@ go test -race         # Check for race conditions
 To publish to GitHub:
 
 ```bash
-# 1. Create GitHub repo at github.com/lokutorTTS/orchestrator
+# 1. Create GitHub repo at github.com/team-hashing/orchestrator
 # 2. Update go.mod module path if different
 # 3. Push to GitHub:
-git remote add origin https://github.com/lokutorTTS/orchestrator.git
+git remote add origin https://github.com/team-hashing/orchestrator.git
 git push -u origin main
 
 # 4. Users can then install:
-go get github.com/lokutorTTS/orchestrator
+go get github.com/team-hashing/orchestrator
 ```
 
 ## Integration with Main Project
@@ -110,7 +110,7 @@ go get github.com/lokutorTTS/orchestrator
 The main project (`cmd/server/main.go`) can use this library:
 
 ```go
-import "github.com/lokutorTTS/orchestrator"
+import "github.com/team-hashing/orchestrator"
 
 // Instead of:
 // - Custom voice agent logic

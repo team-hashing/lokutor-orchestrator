@@ -2,7 +2,7 @@
 
 ## Package Details
 
-**Module Name**: `github.com/lokutorTTS/go-voice-agent`
+**Module Name**: `github.com/team-hashing/go-voice-agent`
 
 **Description**: A production-ready Go library for building voice-powered applications with pluggable STT, LLM, and TTS providers.
 
@@ -34,7 +34,7 @@ Go to [github.com/new](https://github.com/new) and create:
 
 The `go.mod` is already configured:
 ```
-module github.com/lokutorTTS/go-voice-agent
+module github.com/team-hashing/go-voice-agent
 go 1.21
 ```
 
@@ -87,7 +87,7 @@ git commit -m "Initial commit: Lokutor Voice Agent orchestrator library
 - Complete documentation and examples"
 
 # Add remote
-git remote add origin https://github.com/lokutorTTS/go-voice-agent.git
+git remote add origin https://github.com/team-hashing/go-voice-agent.git
 
 # Push to GitHub
 git branch -M main
@@ -98,7 +98,7 @@ git push -u origin main
 
 On GitHub:
 
-1. Go to [Releases](https://github.com/lokutorTTS/go-voice-agent/releases/new)
+1. Go to [Releases](https://github.com/team-hashing/go-voice-agent/releases/new)
 2. Click "Create a new release"
 3. Fill in:
    - **Tag version**: `v1.0.0`
@@ -110,12 +110,12 @@ On GitHub:
 
 Once pushed to GitHub, the package will automatically appear on pkg.go.dev within a few minutes.
 
-View at: https://pkg.go.dev/github.com/lokutorTTS/go-voice-agent
+View at: https://pkg.go.dev/github.com/team-hashing/go-voice-agent
 
 ### 7. Users Can Now Install
 
 ```bash
-go get github.com/lokutorTTS/go-voice-agent
+go get github.com/team-hashing/go-voice-agent
 ```
 
 ---
@@ -172,8 +172,8 @@ make help      # Show available commands
 1. **Create the GitHub repo** with the settings above
 2. **Push the code** using the git commands
 3. **Create v1.0.0 release** on GitHub
-4. **Share the link**: `https://github.com/lokutorTTS/go-voice-agent`
-5. **Users install with**: `go get github.com/lokutorTTS/go-voice-agent`
+4. **Share the link**: `https://github.com/team-hashing/go-voice-agent`
+5. **Users install with**: `go get github.com/team-hashing/go-voice-agent`
 
 ---
 
@@ -181,7 +181,7 @@ make help      # Show available commands
 
 | Metric | Value |
 |--------|-------|
-| **Module** | `github.com/lokutorTTS/go-voice-agent` |
+| **Module** | `github.com/team-hashing/go-voice-agent` |
 | **Go Version** | 1.21+ |
 | **License** | MIT |
 | **Lines of Code** | 537 |
@@ -197,10 +197,10 @@ make help      # Show available commands
 You can add these badges to your README:
 
 ```markdown
-[![Go Reference](https://pkg.go.dev/badge/github.com/lokutorTTS/go-voice-agent.svg)](https://pkg.go.dev/github.com/lokutorTTS/go-voice-agent)
+[![Go Reference](https://pkg.go.dev/badge/github.com/team-hashing/go-voice-agent.svg)](https://pkg.go.dev/github.com/team-hashing/go-voice-agent)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tests](https://img.shields.io/badge/Tests-10%2F10-brightgreen)](./TESTING.md)
-[![Go Report Card](https://goreportcard.com/badge/github.com/lokutorTTS/go-voice-agent)](https://goreportcard.com/report/github.com/lokutorTTS/go-voice-agent)
+[![Go Report Card](https://goreportcard.com/badge/github.com/team-hashing/go-voice-agent)](https://goreportcard.com/report/github.com/team-hashing/go-voice-agent)
 ```
 
 ---
