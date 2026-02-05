@@ -42,6 +42,11 @@ func (v *RMSVAD) Threshold() float64 {
 	return v.threshold
 }
 
+// IsSpeaking returns true if speech is currently detected
+func (v *RMSVAD) IsSpeaking() bool {
+	return v.isSpeaking
+}
+
 func (v *RMSVAD) Process(chunk []byte) (*VADEvent, error) {
 	rms := v.calculateRMS(chunk)
 	now := time.Now()

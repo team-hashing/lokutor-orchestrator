@@ -21,12 +21,13 @@ type ManagedStream struct {
 	mu       sync.Mutex
 
 	// Pipeline control
-	pipelineCtx     context.Context
-	pipelineCancel  context.CancelFunc
-	sttChan         chan<- []byte
-	isSpeaking      bool
-	isThinking      bool
-	lastAudioSentAt time.Time
+	pipelineCtx       context.Context
+	pipelineCancel    context.CancelFunc
+	sttChan           chan<- []byte
+	isSpeaking        bool
+	isThinking        bool
+	lastAudioSentAt   time.Time
+	lastInterruptedAt time.Time
 }
 
 // NewManagedStream creates a new managed stream
@@ -60,22 +61,26 @@ func (ms *ManagedStream) Write(chunk []byte) error {
 		return fmt.Errorf("VAD not configured for this stream")
 	}
 
+	// 0. Interruption Cool-down
+	// If we just interrupted the bot, ignore audio for a short window to let room echo die.
+	if time.Since(ms.lastInterruptedAt) < 400*time.Millisecond {
+		return nil
+	}
+
 	// Adaptive Echo Guard: If we recently sent audio, we might be hearing our own echo.
 	// We temporarily increase the threshold if using RMSVAD.
 	if rmsVAD, ok := ms.vad.(*RMSVAD); ok {
 		// If the bot is CURRENTLY emitting audio chunks, we lock the threshold to a total-mute level.
 		// If we recently sent audio (within 1.5s), we keep a very high gate.
-		ms.mu.Lock()
 		isStillEmitting := time.Since(ms.lastAudioSentAt) < 200*time.Millisecond
 		isRecentlyEmitted := time.Since(ms.lastAudioSentAt) < 1500*time.Millisecond
-		ms.mu.Unlock()
 
 		if isStillEmitting {
 			// Almost impossible to trigger while the server is pumping data
-			rmsVAD.SetThreshold(0.70)
+			rmsVAD.SetThreshold(0.85)
 		} else if isRecentlyEmitted {
 			// Handling the acoustic tail/latency
-			rmsVAD.SetThreshold(0.45)
+			rmsVAD.SetThreshold(0.55)
 		} else {
 			// Restore to base threshold (configured in NewWithVAD/Orchestrator)
 			if baseVAD, baseOk := ms.orch.vad.(*RMSVAD); baseOk {
@@ -88,6 +93,11 @@ func (ms *ManagedStream) Write(chunk []byte) error {
 	event, err := ms.vad.Process(chunk)
 	if err != nil {
 		return err
+	}
+
+	isUserSpeaking := false
+	if rmsVAD, ok := ms.vad.(*RMSVAD); ok {
+		isUserSpeaking = rmsVAD.IsSpeaking()
 	}
 
 	if event != nil {
@@ -122,15 +132,24 @@ func (ms *ManagedStream) Write(chunk []byte) error {
 		}
 	}
 
+	// Dynamic Echo Blanking:
+	// If we are in the echo danger zone and speech hasn't been confirmed yet,
+	// we zero out the chunk to prevent "Ghost Audio" (echo being used as prompt).
+	isRecentlyEmitted := time.Since(ms.lastAudioSentAt) < 1500*time.Millisecond
+	processedChunk := chunk
+	if isRecentlyEmitted && !isUserSpeaking {
+		processedChunk = make([]byte, len(chunk))
+	}
+
 	// Buffer audio and send to STT stream if active
 	if ms.sttChan != nil {
 		select {
-		case ms.sttChan <- chunk:
+		case ms.sttChan <- processedChunk:
 		default:
 			// Channel full, handle or log
 		}
 	}
-	ms.audioBuf.Write(chunk)
+	ms.audioBuf.Write(processedChunk)
 
 	return nil
 }
@@ -212,6 +231,8 @@ func (ms *ManagedStream) runLLMAndTTS(ctx context.Context, transcript string) {
 	ms.mu.Lock()
 	ms.isThinking = false
 	ms.isSpeaking = true
+	// Initialize lastAudioSentAt to now so the adaptive threshold kicks in immediately
+	ms.lastAudioSentAt = time.Now()
 	// Clear VAD state right before speaking to ensure pre-existing echo/noise 
 	// doesn't trigger a barge-in immediately.
 	if ms.vad != nil {
@@ -294,6 +315,8 @@ func (ms *ManagedStream) internalInterrupt() {
 	if ms.pipelineCancel != nil {
 		ms.pipelineCancel()
 		ms.pipelineCancel = nil
+
+		ms.lastInterruptedAt = time.Now()
 
 		// Clear the events channel of any pending AudioChunks to ensure
 		// the Interrupted event is processed as soon as possible by the client.

@@ -16,6 +16,14 @@ Please update your imports and `go.mod` files accordingly:
 go get github.com/lokutor-ai/lokutor-orchestrator
 ```
 
+## [1.3.5] - 2026-02-05
+
+### Fixed
+- **Maximum Echo Guard Hardening**: Increased VAD thresholds to `0.85 RMS` during active emission and `0.55 RMS` during the 1.5s acoustic tail.
+- **Dynamic Ghost Audio Blanking**: Mic audio is now physically zeroed out during the echo tail unless speech is fully confirmed, preventing echo-based "ghost" transcripts from reaching STT providers.
+- **Interruption Cool-down**: Implemented a 400ms hard-ignore period after every interruption to allow client-side audio buffers to fully clear.
+- **Improved VAD Logic**: Added `IsSpeaking()` state tracking and automatic VAD state resets on bot-speech-start.
+
 ## [1.3.4] - 2026-02-05
 
 ### Fixed

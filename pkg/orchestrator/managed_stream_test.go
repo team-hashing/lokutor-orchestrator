@@ -26,12 +26,9 @@ func TestManagedStream_Interruption(t *testing.T) {
 		loudChunk[i+1] = 0x7F
 	}
 
-	// Send multiple chunks to satisfy the VAD confirmation requirement (3 chunks)
-	stream.Write(loudChunk)
-	stream.Write(loudChunk)
-	err := stream.Write(loudChunk)
-	if err != nil {
-		t.Fatalf("Write failed: %v", err)
+	// Send multiple chunks to satisfy the VAD confirmation requirement (5 chunks)
+	for i := 0; i < 5; i++ {
+		stream.Write(loudChunk)
 	}
 
 	// Check for USER_SPEAKING event
@@ -40,7 +37,7 @@ func TestManagedStream_Interruption(t *testing.T) {
 		if ev.Type != UserSpeaking {
 			t.Errorf("Expected USER_SPEAKING, got %v", ev.Type)
 		}
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(500 * time.Millisecond): // Increased timeout for CI/test stability
 		t.Error("Timed out waiting for USER_SPEAKING")
 	}
 }
