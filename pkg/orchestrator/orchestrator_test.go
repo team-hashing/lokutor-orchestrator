@@ -11,7 +11,7 @@ type MockSTTProvider struct {
 	transcribeErr    error
 }
 
-func (m *MockSTTProvider) Transcribe(ctx context.Context, audio []byte) (string, error) {
+func (m *MockSTTProvider) Transcribe(ctx context.Context, audio []byte, lang Language) (string, error) {
 	return m.transcribeResult, m.transcribeErr
 }
 
@@ -40,11 +40,11 @@ type MockTTSProvider struct {
 	streamErr        error
 }
 
-func (m *MockTTSProvider) Synthesize(ctx context.Context, text string, voice Voice) ([]byte, error) {
+func (m *MockTTSProvider) Synthesize(ctx context.Context, text string, voice Voice, lang Language) ([]byte, error) {
 	return m.synthesizeResult, m.synthesizeErr
 }
 
-func (m *MockTTSProvider) StreamSynthesize(ctx context.Context, text string, voice Voice, onChunk func([]byte) error) error {
+func (m *MockTTSProvider) StreamSynthesize(ctx context.Context, text string, voice Voice, lang Language, onChunk func([]byte) error) error {
 	if m.streamErr != nil {
 		return m.streamErr
 	}

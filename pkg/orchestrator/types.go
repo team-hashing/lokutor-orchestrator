@@ -28,8 +28,14 @@ func (n *NoOpLogger) Error(msg string, args ...interface{}) {}
 
 // STTProvider is the interface for Speech-to-Text implementations
 type STTProvider interface {
-	Transcribe(ctx context.Context, audio []byte) (string, error)
+	Transcribe(ctx context.Context, audio []byte, lang Language) (string, error)
 	Name() string
+}
+
+// StreamingSTTProvider allows for real-time transcription
+type StreamingSTTProvider interface {
+	STTProvider
+	StreamTranscribe(ctx context.Context, lang Language, onTranscript func(transcript string, isFinal bool) error) (chan<- []byte, error)
 }
 
 // LLMProvider is the interface for Language Model implementations
@@ -40,9 +46,53 @@ type LLMProvider interface {
 
 // TTSProvider is the interface for Text-to-Speech implementations
 type TTSProvider interface {
-	Synthesize(ctx context.Context, text string, voice Voice) ([]byte, error)
-	StreamSynthesize(ctx context.Context, text string, voice Voice, onChunk func([]byte) error) error
+	Synthesize(ctx context.Context, text string, voice Voice, lang Language) ([]byte, error)
+	StreamSynthesize(ctx context.Context, text string, voice Voice, lang Language, onChunk func([]byte) error) error
 	Name() string
+}
+
+// VADProvider is the interface for Voice Activity Detection implementations
+type VADProvider interface {
+	Process(chunk []byte) (*VADEvent, error)
+	Reset()
+	Name() string
+}
+
+// VADEventType represents the type of VAD event
+type VADEventType string
+
+const (
+	VADSpeechStart VADEventType = "SPEECH_START"
+	VADSpeechEnd   VADEventType = "SPEECH_END"
+	VADSilence     VADEventType = "SILENCE"
+)
+
+// VADEvent contains details about a VAD detection
+type VADEvent struct {
+	Type      VADEventType
+	Timestamp int64
+}
+
+// EventType represents the type of event in the managed stream
+type EventType string
+
+const (
+	UserSpeaking      EventType = "USER_SPEAKING"
+	UserStopped       EventType = "USER_STOPPED"
+	TranscriptPartial EventType = "TRANSCRIPT_PARTIAL"
+	TranscriptFinal   EventType = "TRANSCRIPT_FINAL"
+	BotThinking       EventType = "BOT_THINKING"
+	BotSpeaking       EventType = "BOT_SPEAKING"
+	Interrupted       EventType = "INTERRUPTED"
+	AudioChunk        EventType = "AUDIO_CHUNK"
+	ErrorEvent        EventType = "ERROR"
+)
+
+// OrchestratorEvent represents a message emitted by the managed stream
+type OrchestratorEvent struct {
+	Type      EventType   `json:"type"`
+	SessionID string      `json:"session_id"`
+	Data      interface{} `json:"data,omitempty"`
 }
 
 // Voice represents a voice style
@@ -97,7 +147,7 @@ type Config struct {
 // DefaultConfig returns sensible default configuration
 func DefaultConfig() Config {
 	return Config{
-		SampleRate:         16000,
+		SampleRate:         44100,
 		Channels:           1,
 		BytesPerSamp:       2,
 		MaxContextMessages: 20,
@@ -161,9 +211,7 @@ func (s *ConversationSession) GetContextCopy() []Message {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	contextCopy := make([]Message, len(s.Context))
-	for i := range s.Context {
-		contextCopy[i] = s.Context[i]
-	}
+	copy(contextCopy, s.Context)
 	return contextCopy
 }
 
@@ -172,4 +220,11 @@ func (s *ConversationSession) GetCurrentVoice() Voice {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.CurrentVoice
+}
+
+// GetCurrentLanguage returns the current language setting thread-safely
+func (s *ConversationSession) GetCurrentLanguage() Language {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.CurrentLanguage
 }

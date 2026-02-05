@@ -9,11 +9,17 @@ A production-ready Go library for building voice-powered applications with plugg
 
 ## Features
 
-- ✅ **Provider-agnostic architecture** - Swap STT, LLM, and TTS implementations without changing core logic
-- ✅ **Full conversation pipeline** - Handles transcription, response generation, and synthesis
-- ✅ **Session management** - Automatic context windowing and conversation history tracking
-- ✅ **Streaming support** - Stream audio chunks from TTS in real-time
-- ✅ **Zero external dependencies** - Pure Go core (adapters are optional)
+- ✅ **Full-Duplex Voice Orchestration (v2.0)** - Real-time capture and playback with built-in VAD
+- ✅ **Barge-in Support** - Instantly interrupts the bot when the user starts speaking
+- ✅ **High-Quality Audio** - Native 44.1kHz 16-bit PCM support for crystal clear voice
+- ✅ **Provider-agnostic architecture** - Swap STT, LLM, and TTS implementations
+- ✅ **Multiple Providers Out-of-the-box**:
+    - **LLM**: Groq (Llama), OpenAI (GPT), Anthropic (Claude), Google (Gemini)
+    - **STT**: Groq (Whisper), OpenAI (Whisper), Deepgram (Nova-2), AssemblyAI
+    - **TTS**: Lokutor (Versa)
+- ✅ **Session management** - Automatic context windowing and multi-language support
+- ✅ **Event-driven API** - Thread-safe channel-based event bus for building robust UIs
+- ✅ **Low Latency** - Designed for real-time voice interactions
 
 ## Installation
 
@@ -23,49 +29,59 @@ go get github.com/lokutor-ai/lokutor-orchestrator
 
 ## Quick Start
 
-### Using the Conversation API (Recommended)
+### 1. Full-Duplex Voice Agent (The v2.0 way)
 
-The `Conversation` API is the easiest way to build voice applications. It handles session management, context, and provides a simple interface for common patterns.
+This is the recommended way to build a real-time voice assistant with barge-in support.
 
 ```go
 package main
 
 import (
 	"context"
-	"log"
-	"github.com/lokutor-ai/lokutor-orchestrator"
+	"github.com/lokutor-ai/lokutor-orchestrator/pkg/orchestrator"
+	sttProvider "github.com/lokutor-ai/lokutor-orchestrator/pkg/providers/stt"
+	llmProvider "github.com/lokutor-ai/lokutor-orchestrator/pkg/providers/llm"
+	ttsProvider "github.com/lokutor-ai/lokutor-orchestrator/pkg/providers/tts"
 )
 
 func main() {
-	// Create your providers (implement STTProvider, LLMProvider, TTSProvider)
-	stt := MySTTProvider{}
-	llm := MyLLMProvider{}
-	tts := MyTTSProvider{}
+	// Initialize Providers
+	stt := sttProvider.NewGroqSTT("YOUR_GROQ_KEY", "whisper-large-v3")
+	llm := llmProvider.NewGroqLLM("YOUR_GROQ_KEY", "llama-3.3-70b-versatile")
+	tts := ttsProvider.NewLokutorTTS("YOUR_LOKUTOR_KEY")
+	
+	// Initialize VAD (Voice Activity Detection)
+	vad := orchestrator.NewRMSVAD(0.02, 500*time.Millisecond)
 
-	// Create a conversation with defaults
-	conv := orchestrator.NewConversation(stt, llm, tts)
+	// Create Orchestrator
+	orch := orchestrator.NewWithVAD(stt, llm, tts, vad, orchestrator.DefaultConfig())
+	session := orch.NewSessionWithDefaults("user_123")
 
-	// Set system prompt to guide the LLM
-	conv.SetSystemPrompt("You are a helpful voice assistant. Be concise and friendly.")
+	// Start a Managed Stream
+	stream := orch.NewManagedStream(context.Background(), session)
+	defer stream.Close()
 
-	// Set preferred voice and language
-	conv.SetVoice(orchestrator.VoiceM1)
-	conv.SetLanguage(orchestrator.LanguageEn)
+	// Handle Events
+	go func() {
+		for event := range stream.Events() {
+			switch event.Type {
+			case orchestrator.UserSpeaking:
+				// Stop your audio playback here
+			case orchestrator.TranscriptFinal:
+				fmt.Printf("User: %s\n", event.Data.(string))
+			case orchestrator.AudioChunk:
+				// Play the audio chunk raw bytes
+				playAudio(event.Data.([]byte))
+			}
+		}
+	}()
 
-	ctx := context.Background()
-
-	// Chat with text
-	response, err := conv.Chat(ctx, "Hello! What's the weather today?", func(chunk []byte) error {
-		// Stream audio chunks to speaker
-		return sendToSpeaker(chunk)
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	log.Printf("Assistant said: %s", response)
+	// Pipe your microphone audio bytes here
+	stream.Write(micBytes)
 }
 ```
+
+### 2. Conversational API (Turn-based)
 
 ### Processing Audio Input
 
@@ -93,11 +109,97 @@ log.Printf("Assistant responded: %s", response)
 For advanced use cases where you need fine-grained control, use the `Orchestrator` directly:
 
 ```go
+import "github.com/lokutor-ai/lokutor-orchestrator/pkg/orchestrator"
+
 // Create orchestrator directly
 orch := orchestrator.New(stt, llm, tts, orchestrator.DefaultConfig())
 
 // Create and manage sessions manually
 session := orchestrator.NewConversationSession("user_123")
+```
+
+## Advanced Usage
+
+### Working with Multiple Languages
+
+The orchestrator supports seamless language switching:
+
+```go
+// Set language on a session
+orch.SetLanguage(session, orchestrator.LanguageEs)
+
+// Subsequent interacts in a ManagedStream or Conversation will use Spanish
+// for both STT transcription and TTS synthesis.
+```
+
+## Advanced: Full-Duplex v2.0 (Streaming & Barge-in)
+
+The v2.0 orchestrator supports **Full-Duplex** mode with internal **VAD (Voice Activity Detection)** and **Barge-in** (automatic interruption when the user speaks while the bot is responding).
+
+### Features
+- **Internal VAD:** Automatically detects when the user starts and stops speaking.
+- **Barge-in:** Immediately cancels LLM generation and clears TTS audio buffers when user interruption is detected.
+- **Event Bus:** Emits events for state changes (`UserSpeaking`, `BotThinking`, `Interrupted`, etc.).
+
+### How to test the example agent
+
+1.  **Clone and install dependencies:**
+    ```bash
+    go get ./...
+    ```
+
+2.  **Configure environment:** Create a `.env` file in the root:
+    ```env
+    # Provider Selection
+    STT_PROVIDER=groq|openai|deepgram|assemblyai
+    LLM_PROVIDER=groq|openai|anthropic|google
+
+    # API Keys
+    GROQ_API_KEY=your_groq_key
+    OPENAI_API_KEY=your_openai_key
+    ANTHROPIC_API_KEY=your_anthropic_key
+    GOOGLE_API_KEY=your_google_key
+    DEEPGRAM_API_KEY=your_deepgram_key
+    ASSEMBLYAI_API_KEY=your_assemblyai_key
+    LOKUTOR_API_KEY=your_lokutor_key
+
+    # Settings
+    AGENT_LANGUAGE=es # or en, fr, de, etc.
+    ```
+
+3.  **Run the agent:**
+    ```bash
+    go run cmd/agent/main.go
+    ```
+
+### Using ManagedStream in your app
+
+```go
+// 1. Setup providers
+stt := providers.NewGroqSTT(os.Getenv("GROQ_API_KEY"), "whisper-large-v3")
+llm := providers.NewGroqLLM(os.Getenv("GROQ_API_KEY"), "llama-3.3-70b-versatile")
+tts := providers.NewLokutorTTS(os.Getenv("LOKUTOR_API_KEY"))
+vad := orchestrator.NewRMSVAD(0.05, 500*time.Millisecond)
+
+// 2. Initialize Orchestrator with VAD
+orch := orchestrator.NewWithVAD(stt, llm, tts, vad, orchestrator.DefaultConfig())
+
+// 3. Create a Managed Stream
+ctx := context.Background()
+stream := orch.NewManagedStream(ctx, session)
+
+// 4. Feed audio in and listen for events
+go func() {
+    for event := range stream.Events() {
+        if event.Type == orchestrator.AudioChunk {
+            playAudio(event.Data.([]byte))
+        }
+    }
+}()
+
+// Pipe microphone audio to stream
+stream.Write(microphoneBuffer)
+```
 
 // Process audio
 transcript, audioBytes, err := orch.ProcessAudio(
@@ -348,7 +450,7 @@ func (p *MyTTSProvider) Name() string {
 
 ```go
 Config{
-	SampleRate:         16000,
+	SampleRate:         44100,
 	Channels:           1,
 	BytesPerSamp:       2,
 	MaxContextMessages: 20,
@@ -364,7 +466,7 @@ Config{
 
 ```go
 config := orchestrator.Config{
-	SampleRate:         16000,
+	SampleRate:         44100,
 	Channels:           1,
 	BytesPerSamp:       2,
 	MaxContextMessages: 50,  // Keep more context

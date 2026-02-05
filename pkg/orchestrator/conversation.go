@@ -158,7 +158,7 @@ func (c *Conversation) Chat(ctx context.Context, text string, onAudioChunk func(
 	c.orch.logger.Info("chat response generated", "sessionID", c.session.ID, "responseLen", len(response))
 
 	// Stream TTS
-	err = c.orch.SynthesizeStream(ctx, response, c.session.CurrentVoice, onAudioChunk)
+	err = c.orch.SynthesizeStream(ctx, response, c.session.CurrentVoice, c.session.CurrentLanguage, onAudioChunk)
 	if err != nil {
 		c.orch.logger.Error("TTS streaming failed in chat", "sessionID", c.session.ID, "error", err)
 		return "", err

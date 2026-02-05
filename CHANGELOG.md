@@ -16,6 +16,20 @@ Please update your imports and `go.mod` files accordingly:
 go get github.com/lokutor-ai/lokutor-orchestrator
 ```
 
+## [2.0.0] - 2026-02-05
+
+### Added
+- **Full-Duplex Managed Stream**: New `ManagedStream` for autonomous voice orchestration.
+- **Internal VAD Support**: `VADProvider` interface and default `RMSVAD` implementation.
+- **Barge-in (Interruptions)**: Automatic bot response cancellation when user speech is detected.
+- **Event Bus**: Structured events for conversation state tracking (`USER_SPEAKING`, `BOT_THINKING`, etc.).
+- **Streaming STT Support**: `StreamingSTTProvider` interface for real-time partial transcripts.
+- **Expanded Provider Suite**:
+    - **LLM**: native support for **Anthropic** (Claude), **OpenAI** (GPT), and **Google** (Gemini).
+    - **STT**: native support for **Deepgram** (Nova-2), **AssemblyAI**, and **OpenAI** (Whisper).
+- **New Orchestrator Methods**: `PushAudio` and `NewManagedStream` for plug-and-play integration.
+- **High-Quality Audio**: Built-in support for 44.1kHz 16-bit PCM across all providers.
+
 ## [1.2.1] - 2026-02-03
 
 ### Changed

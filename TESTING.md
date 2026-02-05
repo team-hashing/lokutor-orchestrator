@@ -5,7 +5,7 @@ A production-ready, standalone Go library for building voice-powered application
 ## Test Status: ✅ All Tests Passing
 
 ```
-✅ 14 tests passed
+✅ 16 tests passed
 ✅ 0 failures
 ✅ ~0.17s execution time
 ```
@@ -14,11 +14,12 @@ A production-ready, standalone Go library for building voice-powered application
 
 The library includes comprehensive test coverage across core functionality, concurrency safety, and error handling.
 
-### Core Pipeline Tests (3 tests)
+### Core Pipeline Tests (4 tests)
 
 - **TestOrchestratorCreation** - Provider initialization and orchestrator creation
 - **TestProcessAudio** - Full STT→LLM→TTS pipeline with buffered output
 - **TestProcessAudioStream** - Streaming TTS output with chunked callbacks
+- **TestManagedStream** - Full-duplex orchestration with VAD and events
 
 ### Configuration Tests (1 test)
 
