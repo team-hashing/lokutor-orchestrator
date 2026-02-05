@@ -16,7 +16,7 @@ Please update your imports and `go.mod` files accordingly:
 go get github.com/lokutor-ai/lokutor-orchestrator
 ```
 
-## [2.0.0] - 2026-02-05
+## [1.3.0] - 2026-02-05
 
 ### Added
 - **Full-Duplex Managed Stream**: New `ManagedStream` for autonomous voice orchestration.

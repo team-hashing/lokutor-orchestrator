@@ -9,7 +9,7 @@ A production-ready Go library for building voice-powered applications with plugg
 
 ## Features
 
-- ✅ **Full-Duplex Voice Orchestration (v2.0)** - Real-time capture and playback with built-in VAD
+- ✅ **Full-Duplex Voice Orchestration (v1.3)** - Real-time capture and playback with built-in VAD
 - ✅ **Barge-in Support** - Instantly interrupts the bot when the user starts speaking
 - ✅ **High-Quality Audio** - Native 44.1kHz 16-bit PCM support for crystal clear voice
 - ✅ **Provider-agnostic architecture** - Swap STT, LLM, and TTS implementations
@@ -29,7 +29,7 @@ go get github.com/lokutor-ai/lokutor-orchestrator
 
 ## Quick Start
 
-### 1. Full-Duplex Voice Agent (The v2.0 way)
+### 1. Full-Duplex Voice Agent (The v1.3 way)
 
 This is the recommended way to build a real-time voice assistant with barge-in support.
 
@@ -132,9 +132,9 @@ orch.SetLanguage(session, orchestrator.LanguageEs)
 // for both STT transcription and TTS synthesis.
 ```
 
-## Advanced: Full-Duplex v2.0 (Streaming & Barge-in)
+## Advanced: Full-Duplex v1.3 (Streaming & Barge-in)
 
-The v2.0 orchestrator supports **Full-Duplex** mode with internal **VAD (Voice Activity Detection)** and **Barge-in** (automatic interruption when the user speaks while the bot is responding).
+The v1.3 orchestrator supports **Full-Duplex** mode with internal **VAD (Voice Activity Detection)** and **Barge-in** (automatic interruption when the user speaks while the bot is responding).
 
 ### Features
 - **Internal VAD:** Automatically detects when the user starts and stops speaking.
