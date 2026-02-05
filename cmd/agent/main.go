@@ -181,11 +181,11 @@ func main() {
 			// Increase threshold temporarily to avoid self-interruption.
 			effectiveThreshold := 0.02
 			botPlayingMu.Lock()
-			// If we played audio in the last 200ms, we consider the bot as "active"
-			// to account for room reverb and small output buffer delays.
-			isActuallyPlaying := time.Since(lastPlayedAt) < 200*time.Millisecond
+			// If we played audio in the last 400ms, we consider the bot as "active"
+			// to account for room reverb, hardware latency, and delivery delays.
+			isActuallyPlaying := time.Since(lastPlayedAt) < 400*time.Millisecond
 			if isActuallyPlaying {
-				effectiveThreshold = 0.15 // Significantly higher threshold when bot is active
+				effectiveThreshold = 0.20 // Higher threshold to filter out loud speaker output
 			}
 			botPlayingMu.Unlock()
 
