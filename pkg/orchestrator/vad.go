@@ -16,6 +16,7 @@ type RMSVAD struct {
 	// Hysteresis and confirmed speech detection
 	consecutiveFrames int
 	minConfirmed      int
+	lastRMS           float64
 }
 
 // NewRMSVAD creates a new RMS-based VAD
@@ -42,6 +43,11 @@ func (v *RMSVAD) Threshold() float64 {
 	return v.threshold
 }
 
+// LastRMS returns the RMS of the last processed chunk
+func (v *RMSVAD) LastRMS() float64 {
+	return v.lastRMS
+}
+
 // IsSpeaking returns true if speech is currently detected
 func (v *RMSVAD) IsSpeaking() bool {
 	return v.isSpeaking
@@ -49,6 +55,7 @@ func (v *RMSVAD) IsSpeaking() bool {
 
 func (v *RMSVAD) Process(chunk []byte) (*VADEvent, error) {
 	rms := v.calculateRMS(chunk)
+	v.lastRMS = rms
 	now := time.Now()
 
 	if rms > v.threshold {

@@ -71,9 +71,9 @@ func (t *LokutorTTS) StreamSynthesize(ctx context.Context, text string, voice or
 		"text":    text,
 		"voice":   string(voice),
 		"lang":    string(lang),
-		"speed":   1.05,
-		"steps":   5,
-		"version": "versa-1.0",
+		"speed":   1.0,
+		"steps":   6, // Matched to your flawless Python script
+		"visemes": false,
 	}
 
 	if err := wsjson.Write(ctx, conn, req); err != nil {
@@ -81,11 +81,6 @@ func (t *LokutorTTS) StreamSynthesize(ctx context.Context, text string, voice or
 		conn.Close(websocket.StatusAbnormalClosure, "failed to write json")
 		return fmt.Errorf("failed to send synthesis request: %w", err)
 	}
-
-	// Buffer chunks to reduce event loop pressure and ensure smooth playback.
-	// 2048 bytes is ~23ms of 44.1kHz 16-bit mono audio.
-	const minChunkSize = 2048
-	var buffer []byte
 
 	for {
 		messageType, payload, err := conn.Read(ctx)
@@ -97,23 +92,15 @@ func (t *LokutorTTS) StreamSynthesize(ctx context.Context, text string, voice or
 
 		switch messageType {
 		case websocket.MessageBinary:
-			buffer = append(buffer, payload...)
-			for len(buffer) >= minChunkSize {
-				chunk := make([]byte, minChunkSize)
-				copy(chunk, buffer[:minChunkSize])
-				if err := onChunk(chunk); err != nil {
-					return err
-				}
-				buffer = buffer[minChunkSize:]
+			// ZERO-LATENCY PASSTHROUGH:
+			// Send raw payload immediately. Fixed '8192' buffering was likely cutting wave forms
+			// across network gaps, causing audible clicks/artifacts.
+			if err := onChunk(payload); err != nil {
+				return err
 			}
 		case websocket.MessageText:
 			msg := string(payload)
 			if msg == "EOS" {
-				if len(buffer) > 0 {
-					if err := onChunk(buffer); err != nil {
-						return err
-					}
-				}
 				return nil
 			}
 			if len(msg) >= 4 && msg[:4] == "ERR:" {

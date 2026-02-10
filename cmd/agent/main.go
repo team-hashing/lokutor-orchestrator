@@ -156,6 +156,8 @@ func main() {
 	// Buffer for simple playback coordination
 	var playbackMu sync.Mutex
 	var playbackBytes []byte
+	isInitialBuffering := true
+	const minPreBufferBytes = SampleRate * 2 * 0.6 // 600ms pre-buffer to handle jitter
 
 	var botPlayingMu sync.Mutex
 	var lastPlayedAt time.Time
@@ -185,7 +187,7 @@ func main() {
 			// to account for room reverb, hardware latency, and delivery delays.
 			isActuallyPlaying := time.Since(lastPlayedAt) < 400*time.Millisecond
 			if isActuallyPlaying {
-				effectiveThreshold = 0.20 // Higher threshold to filter out loud speaker output
+				effectiveThreshold = 0.35 // Higher threshold to filter out loud speaker output
 			}
 			botPlayingMu.Unlock()
 
@@ -199,7 +201,32 @@ func main() {
 		}
 		if pOutput != nil {
 			playbackMu.Lock()
-			n := copy(pOutput, playbackBytes)
+
+			// Jitter Buffer Logic: Wait until we have enough audio before starting
+			if isInitialBuffering {
+				if len(playbackBytes) >= int(minPreBufferBytes) {
+					fmt.Printf("\r\033[K[PLAYBACK] Jitter buffer ready (%d bytes). Starting playback...\n", len(playbackBytes))
+					isInitialBuffering = false
+				} else {
+					// Still buffering, play silence
+					for i := range pOutput {
+						pOutput[i] = 0
+					}
+					playbackMu.Unlock()
+					return
+				}
+			}
+
+			// 600ms pre-buffer to handle jitter. We MUST ensure we only move multiples
+			// of 2 bytes (16-bit mono) to avoid sample misalignment artifacts.
+			bytesToCopy := len(pOutput)
+			if len(playbackBytes) < bytesToCopy {
+				bytesToCopy = len(playbackBytes)
+			}
+			// Align to 2-byte boundary
+			bytesToCopy -= bytesToCopy % 2
+
+			n := copy(pOutput[:bytesToCopy], playbackBytes[:bytesToCopy])
 			playbackBytes = playbackBytes[n:]
 
 			// If we played something, update the timestamp
@@ -209,10 +236,17 @@ func main() {
 				botPlayingMu.Unlock()
 			}
 
-			// Fill remaining with silence if playbackBytes was shorter than pOutput
+			// Fill remaining with silence
 			if n < len(pOutput) {
 				for i := n; i < len(pOutput); i++ {
 					pOutput[i] = 0
+				}
+				// If we strictly run out of audio (or were already out), go back to buffering
+				if len(playbackBytes) < 2 {
+					if !isInitialBuffering && n > 0 {
+						fmt.Printf("\r\033[K[PLAYBACK] Buffer underrun! Re-buffering...\n")
+					}
+					isInitialBuffering = true
 				}
 			}
 			playbackMu.Unlock()

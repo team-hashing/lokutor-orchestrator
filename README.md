@@ -5,6 +5,8 @@
 [![Tests](https://img.shields.io/badge/Tests-14%2F14-brightgreen)](./TESTING.md)
 [![Go Report Card](https://goreportcard.com/badge/github.com/lokutor-ai/lokutor-orchestrator)](https://goreportcard.com/report/github.com/lokutor-ai/lokutor-orchestrator)
 
+![Lokutor Orchestrator Hero](hero.png)
+
 A production-ready Go library for building voice-powered applications with pluggable providers for STT (Speech-to-Text), LLM (Language Model), and TTS (Text-to-Speech).
 
 ## Features

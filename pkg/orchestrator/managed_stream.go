@@ -26,7 +26,6 @@ type ManagedStream struct {
 	sttChan           chan<- []byte
 	isSpeaking        bool
 	isThinking        bool
-	lastAudioSentAt   time.Time
 	lastInterruptedAt time.Time
 }
 
@@ -59,28 +58,6 @@ func (ms *ManagedStream) Write(chunk []byte) error {
 
 	if ms.vad == nil {
 		return fmt.Errorf("VAD not configured for this stream")
-	}
-
-	// Adaptive Echo Guard: If we recently sent audio, we might be hearing our own echo.
-	// We temporarily increase the threshold if using RMSVAD.
-	if rmsVAD, ok := ms.vad.(*RMSVAD); ok {
-		// If the bot is CURRENTLY emitting audio chunks, we lock the threshold to a total-mute level.
-		// We use a generous 1s window to account for network jitter and buffering.
-		isStillEmitting := time.Since(ms.lastAudioSentAt) < 1000*time.Millisecond
-		isRecentlyEmitted := time.Since(ms.lastAudioSentAt) < 2000*time.Millisecond
-
-		if isStillEmitting {
-			// Total mute level while bot is actively pushing data
-			rmsVAD.SetThreshold(0.95)
-		} else if isRecentlyEmitted {
-			// Handling the acoustic tail/reverb
-			rmsVAD.SetThreshold(0.65)
-		} else {
-			// Restore to base threshold (configured in NewWithVAD/Orchestrator)
-			if baseVAD, baseOk := ms.orch.vad.(*RMSVAD); baseOk {
-				rmsVAD.SetThreshold(baseVAD.Threshold())
-			}
-		}
 	}
 
 	// 1. Process VAD
@@ -125,28 +102,19 @@ func (ms *ManagedStream) Write(chunk []byte) error {
 		}
 	}
 
-	// Dynamic Echo Blanking:
-	// If we are in the echo danger zone and speech hasn't been confirmed yet,
-	// we zero out the chunk to prevent "Ghost Audio" (echo being used as prompt).
-	isRecentlyEmitted := time.Since(ms.lastAudioSentAt) < 1500*time.Millisecond
-	processedChunk := chunk
-	if isRecentlyEmitted && !isUserSpeaking {
-		processedChunk = make([]byte, len(chunk))
-	}
-
 	// Buffer audio and send to STT stream if active
 	if ms.sttChan != nil {
 		select {
-		case ms.sttChan <- processedChunk:
+		case ms.sttChan <- chunk:
 		default:
-			// Channel full, handle or log
+			// Channel full
 		}
 	}
 
 	// Buffer management with pre-roll:
 	// If not speaking, keep only the last 500ms of audio as pre-roll lead-in.
 	// 44100Hz * 2 bytes * 0.5s = 44100 bytes.
-	ms.audioBuf.Write(processedChunk)
+	ms.audioBuf.Write(chunk)
 	if !isUserSpeaking && ms.audioBuf.Len() > 50000 {
 		// Trim to keep ~500ms
 		data := ms.audioBuf.Bytes()
@@ -184,6 +152,17 @@ func (ms *ManagedStream) startStreamingSTT(provider StreamingSTTProvider) {
 	ms.pipelineCtx = ctx
 	ms.pipelineCancel = cancel
 	ms.sttChan = sttChan
+
+	// Flush pre-roll buffer to the new STT stream
+	if ms.audioBuf.Len() > 0 {
+		data := make([]byte, ms.audioBuf.Len())
+		copy(data, ms.audioBuf.Bytes())
+		select {
+		case sttChan <- data:
+		default:
+			// If channel is full, we might lose the pre-roll, but we avoid blocking the write loop.
+		}
+	}
 	ms.mu.Unlock()
 }
 
@@ -235,8 +214,6 @@ func (ms *ManagedStream) runLLMAndTTS(ctx context.Context, transcript string) {
 	ms.mu.Lock()
 	ms.isThinking = false
 	ms.isSpeaking = true
-	// Initialize lastAudioSentAt to now so the adaptive threshold kicks in immediately
-	ms.lastAudioSentAt = time.Now()
 	// Clear VAD state right before speaking to ensure pre-existing echo/noise
 	// doesn't trigger a barge-in immediately.
 	if ms.vad != nil {
@@ -251,9 +228,9 @@ func (ms *ManagedStream) runLLMAndTTS(ctx context.Context, transcript string) {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			ms.mu.Lock()
-			ms.lastAudioSentAt = time.Now()
-			ms.mu.Unlock()
+			// DEBUG/TELEMETRY: If you see many chunks close together then a gap,
+			// it confirms network jitter or buffer pressure.
+			// fmt.Printf("\r\033[K[STREAM DEBUG] Emitting AudioChunk: %d bytes\n", len(chunk))
 			ms.emit(AudioChunk, chunk)
 			return nil
 		}
@@ -299,13 +276,12 @@ func (ms *ManagedStream) emit(eventType EventType, data interface{}) {
 		return
 	}
 
-	// For AudioChunk, we drop if the buffer is too full to prevent lag.
-	// We have a 1024 buffer which is ~24s of audio, so if it's full,
-	// the client is severely lagging and we MUST drop to maintain real-time.
+	// For AudioChunk, we should ideally never drop unless the stream is closed.
+	// Dropping causes choppiness. We block until space is available or context is done.
 	select {
 	case ms.events <- event:
-	default:
-		// Channel full, dropping audio chunk to maintain real-time performance
+	case <-ms.ctx.Done():
+		// Stream closed, stopping emission
 	}
 }
 
