@@ -28,6 +28,9 @@ type ManagedStream struct {
 	isThinking        bool
 	lastInterruptedAt time.Time
 	lastAudioSentAt   time.Time
+
+	// New: response context for cancelling LLM/TTS independently of STT
+	responseCancel context.CancelFunc
 }
 
 // NewManagedStream creates a new managed stream
@@ -64,7 +67,7 @@ func (ms *ManagedStream) Write(chunk []byte) error {
 	// Dynamic Echo Guard: If we're currently or recently sent audio, increase VAD threshold
 	if rmsVAD, ok := ms.vad.(*RMSVAD); ok {
 		originalThreshold := rmsVAD.Threshold()
-		if time.Since(ms.lastAudioSentAt) < 250*time.Millisecond {
+		if time.Since(ms.lastAudioSentAt) < 400*time.Millisecond {
 			rmsVAD.SetThreshold(0.35)
 			defer rmsVAD.SetThreshold(originalThreshold)
 		}
@@ -177,8 +180,9 @@ func (ms *ManagedStream) startStreamingSTT(provider StreamingSTTProvider) {
 }
 
 func (ms *ManagedStream) runBatchPipeline(audioData []byte) {
-	ctx, cancel := context.WithCancel(ms.ctx)
 	ms.mu.Lock()
+	ms.internalInterrupt()
+	ctx, cancel := context.WithCancel(ms.ctx)
 	ms.pipelineCtx = ctx
 	ms.pipelineCancel = cancel
 	ms.mu.Unlock()
@@ -206,14 +210,23 @@ func (ms *ManagedStream) runBatchPipeline(audioData []byte) {
 
 func (ms *ManagedStream) runLLMAndTTS(ctx context.Context, transcript string) {
 	ms.mu.Lock()
+	// Cancel any existing response interaction to avoid overlapping audio
+	if ms.responseCancel != nil {
+		ms.responseCancel()
+	}
+	// Create a sub-context for this response interaction
+	rCtx, rCancel := context.WithCancel(ctx)
+	ms.responseCancel = rCancel
 	ms.isThinking = true
 	ms.mu.Unlock()
 
+	defer rCancel()
+
 	ms.emit(BotThinking, nil)
 
-	response, err := ms.orch.GenerateResponse(ctx, ms.session)
+	response, err := ms.orch.GenerateResponse(rCtx, ms.session)
 	if err != nil {
-		if ctx.Err() == nil {
+		if rCtx.Err() == nil {
 			ms.emit(ErrorEvent, fmt.Sprintf("LLM error: %v", err))
 		}
 		return
@@ -224,8 +237,7 @@ func (ms *ManagedStream) runLLMAndTTS(ctx context.Context, transcript string) {
 	ms.mu.Lock()
 	ms.isThinking = false
 	ms.isSpeaking = true
-	// Clear VAD state right before speaking to ensure pre-existing echo/noise
-	// doesn't trigger a barge-in immediately.
+	// Clear VAD state right before speaking
 	if ms.vad != nil {
 		ms.vad.Reset()
 	}
@@ -233,14 +245,11 @@ func (ms *ManagedStream) runLLMAndTTS(ctx context.Context, transcript string) {
 
 	ms.emit(BotSpeaking, nil)
 
-	err = ms.orch.SynthesizeStream(ctx, response, ms.session.GetCurrentVoice(), ms.session.GetCurrentLanguage(), func(chunk []byte) error {
+	err = ms.orch.SynthesizeStream(rCtx, response, ms.session.GetCurrentVoice(), ms.session.GetCurrentLanguage(), func(chunk []byte) error {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-rCtx.Done():
+			return rCtx.Err()
 		default:
-			// DEBUG/TELEMETRY: If you see many chunks close together then a gap,
-			// it confirms network jitter or buffer pressure.
-			// fmt.Printf("\r\033[K[STREAM DEBUG] Emitting AudioChunk: %d bytes\n", len(chunk))
 			ms.mu.Lock()
 			ms.lastAudioSentAt = time.Now()
 			ms.mu.Unlock()
@@ -249,12 +258,23 @@ func (ms *ManagedStream) runLLMAndTTS(ctx context.Context, transcript string) {
 		}
 	})
 
-	if err != nil && ctx.Err() == nil {
+	if err != nil && rCtx.Err() == nil {
 		ms.emit(ErrorEvent, fmt.Sprintf("TTS error: %v", err))
 	}
 
 	ms.mu.Lock()
 	ms.isSpeaking = false
+	// Only clear responseCancel if it's still us
+	// (Minor race here, but rCancel call is idempotent)
+	ms.mu.Unlock()
+}
+
+// NotifyAudioPlayed should be called by the client/agent whenever it actually
+// plays a chunk of audio to the speakers. This helps the Echo Guard
+// correctly identify periods when it should be more resistant to barge-in.
+func (ms *ManagedStream) NotifyAudioPlayed() {
+	ms.mu.Lock()
+	ms.lastAudioSentAt = time.Now()
 	ms.mu.Unlock()
 }
 
@@ -271,6 +291,18 @@ func (ms *ManagedStream) Close() {
 }
 
 func (ms *ManagedStream) emit(eventType EventType, data interface{}) {
+	// If it's an audio chunk, only emit it if the bot is actually supposed to be speaking.
+	// This prevents stale audio chunks from a previous generation (that was interrupted)
+	// from leaking into the channel after an Interrupted event.
+	if eventType == AudioChunk {
+		ms.mu.Lock()
+		speaking := ms.isSpeaking
+		ms.mu.Unlock()
+		if !speaking {
+			return
+		}
+	}
+
 	event := OrchestratorEvent{
 		Type:      eventType,
 		SessionID: ms.session.ID,
@@ -309,20 +341,25 @@ func (ms *ManagedStream) internalInterrupt() {
 	if ms.pipelineCancel != nil {
 		ms.pipelineCancel()
 		ms.pipelineCancel = nil
-
-		ms.lastInterruptedAt = time.Now()
-
-		// Clear the events channel of any pending AudioChunks to ensure
-		// the Interrupted event is processed as soon as possible by the client.
-		ms.drainAudioChunks()
-
-		ms.emit(Interrupted, nil)
 	}
+	if ms.responseCancel != nil {
+		ms.responseCancel()
+		ms.responseCancel = nil
+	}
+
+	ms.lastInterruptedAt = time.Now()
+	ms.isSpeaking = false
+	ms.isThinking = false
+
+	// Clear the events channel of any pending AudioChunks to ensure
+	// the Interrupted event is processed as soon as possible by the client.
+	ms.drainAudioChunks()
+
+	ms.emit(Interrupted, nil)
+
 	if ms.sttChan != nil {
 		ms.sttChan = nil
 	}
-	ms.isSpeaking = false
-	ms.isThinking = false
 }
 
 // drainAudioChunks removes all AudioChunk events from the events channel

@@ -156,18 +156,15 @@ func main() {
 	// Buffer for simple playback coordination
 	var playbackMu sync.Mutex
 	var playbackBytes []byte
+	const minSafetyBuffer = SampleRate * 2 * 0.1 // 100ms safety buffer
 	isInitialBuffering := true
-	const minPreBufferBytes = SampleRate * 2 * 0.6 // 600ms pre-buffer to handle jitter
-
-	var botPlayingMu sync.Mutex
-	var lastPlayedAt time.Time
 
 	var rmsMu sync.Mutex
 	lastRMS := 0.0
 
 	onSamples := func(pOutput, pInput []byte, frameCount uint32) {
 		if pInput != nil {
-			// Calculate RMS for debugging/logging
+			// Calculate RMS for telemetry/meter
 			var sum float64
 			for i := 0; i < len(pInput)-1; i += 2 {
 				sample := int16(pInput[i]) | (int16(pInput[i+1]) << 8)
@@ -179,61 +176,40 @@ func main() {
 			lastRMS = rms
 			rmsMu.Unlock()
 
-			// Heuristic: If bot is speaking, it's probably picking up its own audio.
-			// Increase threshold temporarily to avoid self-interruption.
-			effectiveThreshold := 0.02
-			botPlayingMu.Lock()
-			// If we played audio in the last 400ms, we consider the bot as "active"
-			// to account for room reverb, hardware latency, and delivery delays.
-			isActuallyPlaying := time.Since(lastPlayedAt) < 400*time.Millisecond
-			if isActuallyPlaying {
-				effectiveThreshold = 0.35 // Higher threshold to filter out loud speaker output
-			}
-			botPlayingMu.Unlock()
-
-			// Check against threshold
-			if rms > effectiveThreshold {
-				_ = stream.Write(pInput)
-			} else {
-				// Send silence to the VAD so it can track silence duration even while bot speaks
-				_ = stream.Write(make([]byte, len(pInput)))
-			}
+			// Write to the stream - Echo Guard in pkg/orchestrator handles thresholding
+			_ = stream.Write(pInput)
 		}
 		if pOutput != nil {
 			playbackMu.Lock()
 
-			// Jitter Buffer Logic: Wait until we have enough audio before starting
+			// Zero-latency playback with 100ms safety cushion to prevent "chunky" audio.
+			// If we play every byte immediately while the network is still delivering the rest
+			// of the packet, we hit frequent micro-silences.
 			if isInitialBuffering {
-				if len(playbackBytes) >= int(minPreBufferBytes) {
-					fmt.Printf("\r\033[K[PLAYBACK] Jitter buffer ready (%d bytes). Starting playback...\n", len(playbackBytes))
-					isInitialBuffering = false
-				} else {
-					// Still buffering, play silence
+				if len(playbackBytes) < int(minSafetyBuffer) {
+					// Play silence while filling cushion
 					for i := range pOutput {
 						pOutput[i] = 0
 					}
 					playbackMu.Unlock()
 					return
 				}
+				isInitialBuffering = false
 			}
 
-			// 600ms pre-buffer to handle jitter. We MUST ensure we only move multiples
-			// of 2 bytes (16-bit mono) to avoid sample misalignment artifacts.
 			bytesToCopy := len(pOutput)
 			if len(playbackBytes) < bytesToCopy {
 				bytesToCopy = len(playbackBytes)
 			}
-			// Align to 2-byte boundary
+			// Align to 2-byte boundary (16-bit)
 			bytesToCopy -= bytesToCopy % 2
 
 			n := copy(pOutput[:bytesToCopy], playbackBytes[:bytesToCopy])
 			playbackBytes = playbackBytes[n:]
 
-			// If we played something, update the timestamp
+			// If we played something, update the Echo Guard timer
 			if n > 0 {
-				botPlayingMu.Lock()
-				lastPlayedAt = time.Now()
-				botPlayingMu.Unlock()
+				stream.NotifyAudioPlayed()
 			}
 
 			// Fill remaining with silence
@@ -241,11 +217,8 @@ func main() {
 				for i := n; i < len(pOutput); i++ {
 					pOutput[i] = 0
 				}
-				// If we strictly run out of audio (or were already out), go back to buffering
+				// If we ran dry, go back to buffering the 100ms cushion
 				if len(playbackBytes) < 2 {
-					if !isInitialBuffering && n > 0 {
-						fmt.Printf("\r\033[K[PLAYBACK] Buffer underrun! Re-buffering...\n")
-					}
 					isInitialBuffering = true
 				}
 			}
