@@ -27,6 +27,7 @@ type ManagedStream struct {
 	isSpeaking        bool
 	isThinking        bool
 	lastInterruptedAt time.Time
+	lastAudioSentAt   time.Time
 }
 
 // NewManagedStream creates a new managed stream
@@ -58,6 +59,15 @@ func (ms *ManagedStream) Write(chunk []byte) error {
 
 	if ms.vad == nil {
 		return fmt.Errorf("VAD not configured for this stream")
+	}
+
+	// Dynamic Echo Guard: If we're currently or recently sent audio, increase VAD threshold
+	if rmsVAD, ok := ms.vad.(*RMSVAD); ok {
+		originalThreshold := rmsVAD.Threshold()
+		if time.Since(ms.lastAudioSentAt) < 250*time.Millisecond {
+			rmsVAD.SetThreshold(0.35)
+			defer rmsVAD.SetThreshold(originalThreshold)
+		}
 	}
 
 	// 1. Process VAD
@@ -231,6 +241,9 @@ func (ms *ManagedStream) runLLMAndTTS(ctx context.Context, transcript string) {
 			// DEBUG/TELEMETRY: If you see many chunks close together then a gap,
 			// it confirms network jitter or buffer pressure.
 			// fmt.Printf("\r\033[K[STREAM DEBUG] Emitting AudioChunk: %d bytes\n", len(chunk))
+			ms.mu.Lock()
+			ms.lastAudioSentAt = time.Now()
+			ms.mu.Unlock()
 			ms.emit(AudioChunk, chunk)
 			return nil
 		}

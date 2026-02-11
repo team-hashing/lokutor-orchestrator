@@ -14,6 +14,7 @@ import (
 type LokutorTTS struct {
 	apiKey string
 	host   string
+	scheme string
 	mu     sync.Mutex
 	conn   *websocket.Conn
 }
@@ -22,6 +23,7 @@ func NewLokutorTTS(apiKey string) *LokutorTTS {
 	return &LokutorTTS{
 		apiKey: apiKey,
 		host:   "api.lokutor.com",
+		scheme: "wss",
 	}
 }
 
@@ -33,7 +35,7 @@ func (t *LokutorTTS) getConn(ctx context.Context) (*websocket.Conn, error) {
 		return t.conn, nil
 	}
 
-	u := url.URL{Scheme: "wss", Host: t.host, Path: "/ws", RawQuery: "api_key=" + t.apiKey}
+	u := url.URL{Scheme: t.scheme, Host: t.host, Path: "/ws", RawQuery: "api_key=" + t.apiKey}
 	conn, _, err := websocket.Dial(ctx, u.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to lokutor: %w", err)
