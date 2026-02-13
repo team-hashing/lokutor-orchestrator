@@ -41,7 +41,7 @@ func (t *LokutorTTS) getConn(ctx context.Context) (*websocket.Conn, error) {
 		return nil, fmt.Errorf("failed to connect to lokutor: %w", err)
 	}
 
-	// Increase read limit to 10MB to handle large audio chunks
+	
 	conn.SetReadLimit(10 * 1024 * 1024)
 
 	t.conn = conn
@@ -74,7 +74,7 @@ func (t *LokutorTTS) StreamSynthesize(ctx context.Context, text string, voice or
 		"voice":   string(voice),
 		"lang":    string(lang),
 		"speed":   1.0,
-		"steps":   6, // Matched to your flawless Python script
+		"steps":   6, 
 		"visemes": false,
 	}
 
@@ -94,8 +94,8 @@ func (t *LokutorTTS) StreamSynthesize(ctx context.Context, text string, voice or
 
 		switch messageType {
 		case websocket.MessageBinary:
-			// ZERO-LATENCY PASSTHROUGH:
-			// Send raw payload immediately to avoid any "chunking" or delays between segments.
+			
+			
 			if err := onChunk(payload); err != nil {
 				return err
 			}

@@ -7,7 +7,7 @@ import (
 	"sync"
 )
 
-// Orchestrator manages the STT -> LLM -> TTS pipeline
+
 type Orchestrator struct {
 	stt    STTProvider
 	llm    LLMProvider
@@ -18,18 +18,18 @@ type Orchestrator struct {
 	mu     sync.RWMutex
 }
 
-// New creates a new orchestrator with the given providers
-// If logger is nil, a no-op logger is used
+
+
 func New(stt STTProvider, llm LLMProvider, tts TTSProvider, config Config) *Orchestrator {
 	return NewWithLogger(stt, llm, tts, nil, config, &NoOpLogger{})
 }
 
-// NewWithVAD creates a new orchestrator with the given providers including VAD
+
 func NewWithVAD(stt STTProvider, llm LLMProvider, tts TTSProvider, vad VADProvider, config Config) *Orchestrator {
 	return NewWithLogger(stt, llm, tts, vad, config, &NoOpLogger{})
 }
 
-// NewWithLogger creates a new orchestrator with a custom logger
+
 func NewWithLogger(stt STTProvider, llm LLMProvider, tts TTSProvider, vad VADProvider, config Config, logger Logger) *Orchestrator {
 	if logger == nil {
 		logger = &NoOpLogger{}
@@ -44,7 +44,7 @@ func NewWithLogger(stt STTProvider, llm LLMProvider, tts TTSProvider, vad VADPro
 	}
 }
 
-// PushAudio processes a continuous stream of audio chunks through the VAD
+
 func (o *Orchestrator) PushAudio(sessionID string, chunk []byte) (*VADEvent, error) {
 	if o.vad == nil {
 		return nil, fmt.Errorf("VAD provider not configured")
@@ -52,9 +52,9 @@ func (o *Orchestrator) PushAudio(sessionID string, chunk []byte) (*VADEvent, err
 	return o.vad.Process(chunk)
 }
 
-// ProcessAudio handles the full pipeline: STT -> LLM -> TTS
+
 func (o *Orchestrator) ProcessAudio(ctx context.Context, session *ConversationSession, audioData []byte) (string, []byte, error) {
-	// 1. Transcribe audio
+	
 	transcript, err := o.Transcribe(ctx, audioData, session.GetCurrentLanguage())
 	if err != nil {
 		return "", nil, fmt.Errorf("transcription failed: %w", err)
@@ -68,7 +68,7 @@ func (o *Orchestrator) ProcessAudio(ctx context.Context, session *ConversationSe
 	o.logger.Info("transcription completed", "sessionID", session.ID, "length", len(transcript))
 	session.AddMessage("user", transcript)
 
-	// 2. Get LLM response
+	
 	response, err := o.GenerateResponse(ctx, session)
 	if err != nil {
 		o.logger.Error("LLM generation failed", "sessionID", session.ID, "error", err)
@@ -78,7 +78,7 @@ func (o *Orchestrator) ProcessAudio(ctx context.Context, session *ConversationSe
 	o.logger.Info("LLM response generated", "sessionID", session.ID, "length", len(response))
 	session.AddMessage("assistant", response)
 
-	// 3. Synthesize response to audio
+	
 	audioBytes, err := o.Synthesize(ctx, response, session.GetCurrentVoice(), session.GetCurrentLanguage())
 	if err != nil {
 		o.logger.Error("TTS synthesis failed", "sessionID", session.ID, "error", err)
@@ -89,9 +89,9 @@ func (o *Orchestrator) ProcessAudio(ctx context.Context, session *ConversationSe
 	return transcript, audioBytes, nil
 }
 
-// ProcessAudioStream handles streaming TTS output
+
 func (o *Orchestrator) ProcessAudioStream(ctx context.Context, session *ConversationSession, audioData []byte, onAudioChunk func([]byte) error) (string, error) {
-	// 1. Transcribe
+	
 	transcript, err := o.Transcribe(ctx, audioData, session.GetCurrentLanguage())
 	if err != nil {
 		return "", fmt.Errorf("transcription failed: %w", err)
@@ -105,7 +105,7 @@ func (o *Orchestrator) ProcessAudioStream(ctx context.Context, session *Conversa
 	o.logger.Info("transcription completed", "sessionID", session.ID, "length", len(transcript))
 	session.AddMessage("user", transcript)
 
-	// 2. Get LLM response
+	
 	response, err := o.GenerateResponse(ctx, session)
 	if err != nil {
 		o.logger.Error("LLM generation failed", "sessionID", session.ID, "error", err)
@@ -115,7 +115,7 @@ func (o *Orchestrator) ProcessAudioStream(ctx context.Context, session *Conversa
 	o.logger.Info("LLM response generated", "sessionID", session.ID, "length", len(response))
 	session.AddMessage("assistant", response)
 
-	// 3. Stream TTS output
+	
 	err = o.SynthesizeStream(ctx, response, session.GetCurrentVoice(), session.GetCurrentLanguage(), onAudioChunk)
 	if err != nil {
 		o.logger.Error("TTS streaming failed", "sessionID", session.ID, "error", err)
@@ -126,47 +126,47 @@ func (o *Orchestrator) ProcessAudioStream(ctx context.Context, session *Conversa
 	return transcript, nil
 }
 
-// Transcribe converts audio to text
+
 func (o *Orchestrator) Transcribe(ctx context.Context, audioData []byte, lang Language) (string, error) {
 	return o.stt.Transcribe(ctx, audioData, lang)
 }
 
-// GenerateResponse gets an LLM response based on session context
+
 func (o *Orchestrator) GenerateResponse(ctx context.Context, session *ConversationSession) (string, error) {
 	return o.llm.Complete(ctx, session.GetContextCopy())
 }
 
-// Synthesize converts text to speech audio
+
 func (o *Orchestrator) Synthesize(ctx context.Context, text string, voice Voice, lang Language) ([]byte, error) {
 	return o.tts.Synthesize(ctx, text, voice, lang)
 }
 
-// SynthesizeStream converts text to speech with streaming
+
 func (o *Orchestrator) SynthesizeStream(ctx context.Context, text string, voice Voice, lang Language, onChunk func([]byte) error) error {
 	return o.tts.StreamSynthesize(ctx, text, voice, lang, onChunk)
 }
 
-// HandleInterruption processes an interruption in the conversation
+
 func (o *Orchestrator) HandleInterruption(session *ConversationSession) {
 	o.logger.Info("conversation interrupted", "sessionID", session.ID)
-	// Can be extended for custom interruption handling
+	
 }
 
-// UpdateConfig updates the orchestrator configuration
+
 func (o *Orchestrator) UpdateConfig(cfg Config) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.config = cfg
 }
 
-// GetConfig returns the current configuration
+
 func (o *Orchestrator) GetConfig() Config {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	return o.config
 }
 
-// GetProviders returns information about the current providers
+
 func (o *Orchestrator) GetProviders() map[string]string {
 	return map[string]string{
 		"stt": o.stt.Name(),
@@ -175,8 +175,8 @@ func (o *Orchestrator) GetProviders() map[string]string {
 	}
 }
 
-// NewSessionWithDefaults creates a new conversation session with orchestrator's default config
-// This automatically applies the orchestrator's configured defaults to the session
+
+
 func (o *Orchestrator) NewSessionWithDefaults(userID string) *ConversationSession {
 	session := NewConversationSession(userID)
 	session.MaxMessages = o.config.MaxContextMessages
@@ -185,32 +185,32 @@ func (o *Orchestrator) NewSessionWithDefaults(userID string) *ConversationSessio
 	return session
 }
 
-// SetSystemPrompt adds a system prompt message to a session
-// This is a convenience method - equivalent to session.AddMessage("system", prompt)
+
+
 func (o *Orchestrator) SetSystemPrompt(session *ConversationSession, prompt string) {
 	session.AddMessage("system", prompt)
 }
 
-// SetVoice changes the voice for a session
-// This is a convenience method - equivalent to setting session.CurrentVoice directly
+
+
 func (o *Orchestrator) SetVoice(session *ConversationSession, voice Voice) {
 	session.CurrentVoice = voice
 }
 
-// SetLanguage changes the language for a session
-// This is a convenience method - equivalent to setting session.CurrentLanguage directly
+
+
 func (o *Orchestrator) SetLanguage(session *ConversationSession, lang Language) {
 	session.CurrentLanguage = lang
 }
 
-// ResetSession clears the conversation history for a session
-// This is a convenience method - equivalent to session.ClearContext()
+
+
 func (o *Orchestrator) ResetSession(session *ConversationSession) {
 	session.ClearContext()
 }
 
-// NewManagedStream creates a new managed stream for a session
-// This follows the Plug & Play pattern for full-duplex voice orchestration
+
+
 func (o *Orchestrator) NewManagedStream(ctx context.Context, session *ConversationSession) *ManagedStream {
 	return NewManagedStream(ctx, o, session)
 }

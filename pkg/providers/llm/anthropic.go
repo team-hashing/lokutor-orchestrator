@@ -28,7 +28,7 @@ func NewAnthropicLLM(apiKey string, model string) *AnthropicLLM {
 }
 
 func (l *AnthropicLLM) Complete(ctx context.Context, messages []orchestrator.Message) (string, error) {
-	// Anthropic uses "system" as a top-level field if present in the first message
+	
 	var system string
 	var anthropicMessages []map[string]string
 

@@ -24,7 +24,7 @@ const (
 )
 
 func main() {
-	// Load .env file
+	
 	if err := godotenv.Load(); err != nil {
 		log.Println("Note: No .env file found, using system environment variables")
 	}
@@ -55,7 +55,7 @@ func main() {
 		log.Fatal("Error: LOKUTOR_API_KEY must be set.")
 	}
 
-	// STT Selection
+	
 	var stt orchestrator.STTProvider
 	switch sttProviderName {
 	case "openai":
@@ -86,12 +86,12 @@ func main() {
 		stt = sttProvider.NewGroqSTT(groqKey, groqModel)
 	}
 
-	// Set sample rate if supported
+	
 	if s, ok := stt.(interface{ SetSampleRate(int) }); ok {
 		s.SetSampleRate(SampleRate)
 	}
 
-	// LLM Selection
+	
 	var llm orchestrator.LLMProvider
 	switch llmProviderName {
 	case "openai":
@@ -126,7 +126,7 @@ func main() {
 	tts := ttsProvider.NewLokutorTTS(lokutorKey)
 
 	vad := orchestrator.NewRMSVAD(0.02, 500*time.Millisecond)
-	vad.SetMinConfirmed(3) // Require ~30-50ms to trigger barge-in - very snappy
+	vad.SetMinConfirmed(3) 
 
 	config := orchestrator.DefaultConfig()
 	config.Language = lang
@@ -146,14 +146,14 @@ func main() {
 	stream := orch.NewManagedStream(ctx, session)
 	defer stream.Close()
 
-	// 2. Setup Audio Engine (malgo)
+	
 	mctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer mctx.Uninit()
 
-	// Buffer for simple playback coordination
+	
 	var playbackMu sync.Mutex
 	var playbackBytes []byte
 
@@ -162,10 +162,10 @@ func main() {
 
 	onSamples := func(pOutput, pInput []byte, frameCount uint32) {
 		if pInput != nil {
-			// Write to the stream - Echo Guard and VAD are handled internally
+			
 			_ = stream.Write(pInput)
 
-			// Update the mic energy meter RMS data
+			
 			rmsMu.Lock()
 			lastRMS = vad.LastRMS()
 			rmsMu.Unlock()
@@ -173,8 +173,8 @@ func main() {
 		if pOutput != nil {
 			playbackMu.Lock()
 
-			// Micro-cushion: only start playing if we have enough to fill at least half a frame.
-			// This prevents stuttering when network packets are smaller than the hardware buffer.
+			
+			
 			if len(playbackBytes) < len(pOutput)/2 && len(playbackBytes) < 2048 {
 				for i := range pOutput {
 					pOutput[i] = 0
@@ -183,23 +183,23 @@ func main() {
 				return
 			}
 
-			// Consume audio from buffer as soon as it arrives
+			
 			bytesToCopy := len(pOutput)
 			if len(playbackBytes) < bytesToCopy {
 				bytesToCopy = len(playbackBytes)
 			}
-			// Align to 2-byte boundary (16-bit)
+			
 			bytesToCopy -= bytesToCopy % 2
 
 			n := copy(pOutput[:bytesToCopy], playbackBytes[:bytesToCopy])
 			playbackBytes = playbackBytes[n:]
 
-			// If we played something, update the Echo Guard timer
+			
 			if n > 0 {
 				stream.NotifyAudioPlayed()
 			}
 
-			// Fill remaining with silence
+			
 			if n < len(pOutput) {
 				for i := n; i < len(pOutput); i++ {
 					pOutput[i] = 0
@@ -215,7 +215,7 @@ func main() {
 	deviceConfig.Playback.Format = malgo.FormatS16
 	deviceConfig.Playback.Channels = 1
 	deviceConfig.SampleRate = SampleRate
-	deviceConfig.Alsa.NoMMap = 1 // Better compatibility on some systems
+	deviceConfig.Alsa.NoMMap = 1 
 
 	device, err := malgo.InitDevice(mctx.Context, deviceConfig, malgo.DeviceCallbacks{
 		Data: onSamples,
@@ -229,7 +229,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Visual feedback for microphone levels
+	
 	go func() {
 		for {
 			rmsMu.Lock()
@@ -238,7 +238,7 @@ func main() {
 
 			if level >= 0.0 {
 				meter := ""
-				dots := int(level * 500) // Multiply by more to see smaller fluctuations
+				dots := int(level * 500) 
 				if dots > 40 {
 					dots = 40
 				}

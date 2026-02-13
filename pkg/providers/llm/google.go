@@ -39,7 +39,7 @@ func (l *GoogleLLM) Complete(ctx context.Context, messages []orchestrator.Messag
 	for _, m := range messages {
 		role := m.Role
 		if role == "system" {
-			role = "user" // Gemini doesn't always handle system role in the same way in all models
+			role = "user" 
 		}
 		if role == "assistant" {
 			role = "model"

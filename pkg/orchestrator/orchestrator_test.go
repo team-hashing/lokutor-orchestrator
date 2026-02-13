@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// MockSTTProvider for testing
+
 type MockSTTProvider struct {
 	transcribeResult string
 	transcribeErr    error
@@ -19,7 +19,7 @@ func (m *MockSTTProvider) Name() string {
 	return "MockSTT"
 }
 
-// MockLLMProvider for testing
+
 type MockLLMProvider struct {
 	completeResult string
 	completeErr    error
@@ -33,7 +33,7 @@ func (m *MockLLMProvider) Name() string {
 	return "MockLLM"
 }
 
-// MockTTSProvider for testing
+
 type MockTTSProvider struct {
 	synthesizeResult []byte
 	synthesizeErr    error
@@ -55,7 +55,7 @@ func (m *MockTTSProvider) Name() string {
 	return "MockTTS"
 }
 
-// Test orchestrator creation
+
 func TestOrchestratorCreation(t *testing.T) {
 	stt := &MockSTTProvider{}
 	llm := &MockLLMProvider{}
@@ -80,7 +80,7 @@ func TestOrchestratorCreation(t *testing.T) {
 	}
 }
 
-// Test ProcessAudio full pipeline
+
 func TestProcessAudio(t *testing.T) {
 	stt := &MockSTTProvider{
 		transcribeResult: "Hello, how are you?",
@@ -126,7 +126,7 @@ func TestProcessAudio(t *testing.T) {
 	}
 }
 
-// Test streaming TTS
+
 func TestProcessAudioStream(t *testing.T) {
 	stt := &MockSTTProvider{
 		transcribeResult: "Hello",
@@ -165,7 +165,7 @@ func TestProcessAudioStream(t *testing.T) {
 	}
 }
 
-// Test configuration management
+
 func TestConfigManagement(t *testing.T) {
 	stt := &MockSTTProvider{}
 	llm := &MockLLMProvider{}
@@ -198,7 +198,7 @@ func TestConfigManagement(t *testing.T) {
 	}
 }
 
-// Test interruption handling
+
 func TestHandleInterruption(t *testing.T) {
 	stt := &MockSTTProvider{}
 	llm := &MockLLMProvider{}
@@ -210,7 +210,7 @@ func TestHandleInterruption(t *testing.T) {
 	orch.HandleInterruption(session)
 }
 
-// TestConcurrentSessionOperations tests that multiple goroutines can safely access a session
+
 func TestConcurrentSessionOperations(t *testing.T) {
 	stt := &MockSTTProvider{transcribeResult: "Hello"}
 	llm := &MockLLMProvider{completeResult: "Hi there"}
@@ -219,7 +219,7 @@ func TestConcurrentSessionOperations(t *testing.T) {
 	orch := New(stt, llm, tts, DefaultConfig())
 	session := NewConversationSession("concurrent_test")
 
-	// Run multiple operations concurrently
+	
 	numGoroutines := 10
 	done := make(chan bool, numGoroutines)
 
@@ -233,18 +233,18 @@ func TestConcurrentSessionOperations(t *testing.T) {
 		}()
 	}
 
-	// Wait for all goroutines to complete
+	
 	for i := 0; i < numGoroutines; i++ {
 		<-done
 	}
 
-	// Verify session integrity
+	
 	if len(session.Context) == 0 {
 		t.Fatal("session context should not be empty after concurrent operations")
 	}
 }
 
-// TestConfigThreadSafety tests that config can be read and updated safely
+
 func TestConfigThreadSafety(t *testing.T) {
 	stt := &MockSTTProvider{}
 	llm := &MockLLMProvider{}
@@ -255,7 +255,7 @@ func TestConfigThreadSafety(t *testing.T) {
 
 	done := make(chan bool, 20)
 
-	// 10 goroutines writing config
+	
 	for i := 0; i < 10; i++ {
 		go func(val int) {
 			cfg := orch.GetConfig()
@@ -265,7 +265,7 @@ func TestConfigThreadSafety(t *testing.T) {
 		}(i)
 	}
 
-	// 10 goroutines reading config
+	
 	for i := 0; i < 10; i++ {
 		go func() {
 			_ = orch.GetConfig()
@@ -273,19 +273,19 @@ func TestConfigThreadSafety(t *testing.T) {
 		}()
 	}
 
-	// Wait for all to complete
+	
 	for i := 0; i < 20; i++ {
 		<-done
 	}
 
-	// Verify config is still valid
+	
 	cfg := orch.GetConfig()
 	if cfg.SampleRate == 0 {
 		t.Fatal("config was corrupted")
 	}
 }
 
-// TestContextCancellation tests that operations respect context cancellation
+
 func TestContextCancellation(t *testing.T) {
 	stt := &MockSTTProvider{transcribeResult: "Hello", transcribeErr: context.Canceled}
 	llm := &MockLLMProvider{}
@@ -295,7 +295,7 @@ func TestContextCancellation(t *testing.T) {
 	session := NewConversationSession("cancel_test")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately
+	cancel() 
 
 	_, _, err := orch.ProcessAudio(ctx, session, []byte("audio"))
 	if err == nil {
@@ -303,7 +303,7 @@ func TestContextCancellation(t *testing.T) {
 	}
 }
 
-// TestCustomErrorTypes tests that proper custom error types are returned
+
 func TestCustomErrorTypes(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -334,7 +334,7 @@ func TestCustomErrorTypes(t *testing.T) {
 	}
 }
 
-// Helper function to check if an error is of a specific type
+
 func isErrorType(err error, target error) bool {
 	if err == nil && target == nil {
 		return true

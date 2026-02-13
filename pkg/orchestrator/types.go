@@ -5,20 +5,20 @@ import (
 	"sync"
 )
 
-// Logger interface allows custom logging implementations
-// Implementations can use structured logging, slog, logrus, zap, or any custom logger
+
+
 type Logger interface {
-	// Debug logs a debug message
+	
 	Debug(msg string, args ...interface{})
-	// Info logs an info message
+	
 	Info(msg string, args ...interface{})
-	// Warn logs a warning message
+	
 	Warn(msg string, args ...interface{})
-	// Error logs an error message
+	
 	Error(msg string, args ...interface{})
 }
 
-// NoOpLogger is a Logger that discards all messages
+
 type NoOpLogger struct{}
 
 func (n *NoOpLogger) Debug(msg string, args ...interface{}) {}
@@ -26,32 +26,32 @@ func (n *NoOpLogger) Info(msg string, args ...interface{})  {}
 func (n *NoOpLogger) Warn(msg string, args ...interface{})  {}
 func (n *NoOpLogger) Error(msg string, args ...interface{}) {}
 
-// STTProvider is the interface for Speech-to-Text implementations
+
 type STTProvider interface {
 	Transcribe(ctx context.Context, audio []byte, lang Language) (string, error)
 	Name() string
 }
 
-// StreamingSTTProvider allows for real-time transcription
+
 type StreamingSTTProvider interface {
 	STTProvider
 	StreamTranscribe(ctx context.Context, lang Language, onTranscript func(transcript string, isFinal bool) error) (chan<- []byte, error)
 }
 
-// LLMProvider is the interface for Language Model implementations
+
 type LLMProvider interface {
 	Complete(ctx context.Context, messages []Message) (string, error)
 	Name() string
 }
 
-// TTSProvider is the interface for Text-to-Speech implementations
+
 type TTSProvider interface {
 	Synthesize(ctx context.Context, text string, voice Voice, lang Language) ([]byte, error)
 	StreamSynthesize(ctx context.Context, text string, voice Voice, lang Language, onChunk func([]byte) error) error
 	Name() string
 }
 
-// VADProvider is the interface for Voice Activity Detection implementations
+
 type VADProvider interface {
 	Process(chunk []byte) (*VADEvent, error)
 	Reset()
@@ -59,7 +59,7 @@ type VADProvider interface {
 	Name() string
 }
 
-// VADEventType represents the type of VAD event
+
 type VADEventType string
 
 const (
@@ -68,13 +68,13 @@ const (
 	VADSilence     VADEventType = "SILENCE"
 )
 
-// VADEvent contains details about a VAD detection
+
 type VADEvent struct {
 	Type      VADEventType
 	Timestamp int64
 }
 
-// EventType represents the type of event in the managed stream
+
 type EventType string
 
 const (
@@ -89,14 +89,14 @@ const (
 	ErrorEvent        EventType = "ERROR"
 )
 
-// OrchestratorEvent represents a message emitted by the managed stream
+
 type OrchestratorEvent struct {
 	Type      EventType   `json:"type"`
 	SessionID string      `json:"session_id"`
 	Data      interface{} `json:"data,omitempty"`
 }
 
-// Voice represents a voice style
+
 type Voice string
 
 const (
@@ -112,7 +112,7 @@ const (
 	VoiceM5 Voice = "M5"
 )
 
-// Language represents supported languages
+
 type Language string
 
 const (
@@ -126,13 +126,13 @@ const (
 	LanguageZh Language = "zh"
 )
 
-// Message represents a conversation message
+
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
-// Config holds orchestrator configuration
+
 type Config struct {
 	SampleRate         int
 	Channels           int
@@ -145,7 +145,7 @@ type Config struct {
 	TTSTimeout         uint
 }
 
-// DefaultConfig returns sensible default configuration
+
 func DefaultConfig() Config {
 	return Config{
 		SampleRate:         44100,
@@ -160,7 +160,7 @@ func DefaultConfig() Config {
 	}
 }
 
-// ConversationSession represents an ongoing conversation
+
 type ConversationSession struct {
 	mu              sync.RWMutex
 	ID              string
@@ -172,7 +172,7 @@ type ConversationSession struct {
 	CurrentLanguage Language
 }
 
-// NewConversationSession creates a new conversation session
+
 func NewConversationSession(userID string) *ConversationSession {
 	return &ConversationSession{
 		ID:              userID,
@@ -183,7 +183,7 @@ func NewConversationSession(userID string) *ConversationSession {
 	}
 }
 
-// AddMessage adds a message to the conversation context
+
 func (s *ConversationSession) AddMessage(role, content string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -198,7 +198,7 @@ func (s *ConversationSession) AddMessage(role, content string) {
 	}
 }
 
-// ClearContext clears the conversation history
+
 func (s *ConversationSession) ClearContext() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -207,7 +207,7 @@ func (s *ConversationSession) ClearContext() {
 	s.LastAssistant = ""
 }
 
-// GetContextCopy returns a thread-safe copy of the conversation context
+
 func (s *ConversationSession) GetContextCopy() []Message {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -216,14 +216,14 @@ func (s *ConversationSession) GetContextCopy() []Message {
 	return contextCopy
 }
 
-// GetCurrentVoice returns the current voice setting thread-safely
+
 func (s *ConversationSession) GetCurrentVoice() Voice {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.CurrentVoice
 }
 
-// GetCurrentLanguage returns the current language setting thread-safely
+
 func (s *ConversationSession) GetCurrentLanguage() Language {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

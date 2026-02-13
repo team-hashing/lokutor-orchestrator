@@ -26,19 +26,19 @@ func (s *AssemblyAISTT) Name() string {
 }
 
 func (s *AssemblyAISTT) Transcribe(ctx context.Context, audioPCM []byte, lang orchestrator.Language) (string, error) {
-	// 1. Upload
+	
 	uploadURL, err := s.upload(ctx, audioPCM)
 	if err != nil {
 		return "", err
 	}
 
-	// 2. Submit transcription
+	
 	transcriptID, err := s.submit(ctx, uploadURL, lang)
 	if err != nil {
 		return "", err
 	}
 
-	// 3. Poll for result
+	
 	for {
 		select {
 		case <-ctx.Done():

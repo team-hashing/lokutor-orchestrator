@@ -48,7 +48,7 @@ func (s *DeepgramSTT) Transcribe(ctx context.Context, audioPCM []byte, lang orch
 	}
 
 	req.Header.Set("Authorization", "Token "+s.apiKey)
-	req.Header.Set("Content-Type", "audio/l16; rate=44100; channels=1") // Adjust rate based on usage or inject it
+	req.Header.Set("Content-Type", "audio/l16; rate=44100; channels=1") 
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
