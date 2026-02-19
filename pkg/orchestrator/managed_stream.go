@@ -167,22 +167,18 @@ func (ms *ManagedStream) startStreamingSTT(provider StreamingSTTProvider) {
 		return
 	}
 
-	ms.mu.Lock()
 	ms.pipelineCtx = ctx
 	ms.pipelineCancel = cancel
 	ms.sttChan = sttChan
 
-	
 	if ms.audioBuf.Len() > 0 {
 		data := make([]byte, ms.audioBuf.Len())
 		copy(data, ms.audioBuf.Bytes())
 		select {
 		case sttChan <- data:
 		default:
-			
 		}
 	}
-	ms.mu.Unlock()
 }
 
 func (ms *ManagedStream) runBatchPipeline(audioData []byte) {
