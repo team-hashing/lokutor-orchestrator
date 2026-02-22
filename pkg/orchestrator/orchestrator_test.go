@@ -5,7 +5,6 @@ import (
 	"testing"
 )
 
-
 type MockSTTProvider struct {
 	transcribeResult string
 	transcribeErr    error
@@ -19,7 +18,6 @@ func (m *MockSTTProvider) Name() string {
 	return "MockSTT"
 }
 
-
 type MockLLMProvider struct {
 	completeResult string
 	completeErr    error
@@ -32,7 +30,6 @@ func (m *MockLLMProvider) Complete(ctx context.Context, messages []Message) (str
 func (m *MockLLMProvider) Name() string {
 	return "MockLLM"
 }
-
 
 type MockTTSProvider struct {
 	synthesizeResult []byte
@@ -51,10 +48,14 @@ func (m *MockTTSProvider) StreamSynthesize(ctx context.Context, text string, voi
 	return onChunk(m.synthesizeResult)
 }
 
+func (m *MockTTSProvider) Abort() error {
+	// test mock: nothing to abort, just succeed
+	return nil
+}
+
 func (m *MockTTSProvider) Name() string {
 	return "MockTTS"
 }
-
 
 func TestOrchestratorCreation(t *testing.T) {
 	stt := &MockSTTProvider{}
@@ -79,7 +80,6 @@ func TestOrchestratorCreation(t *testing.T) {
 		t.Errorf("Expected TTS provider name to be 'MockTTS', got %s", providers["tts"])
 	}
 }
-
 
 func TestProcessAudio(t *testing.T) {
 	stt := &MockSTTProvider{
@@ -126,7 +126,6 @@ func TestProcessAudio(t *testing.T) {
 	}
 }
 
-
 func TestProcessAudioStream(t *testing.T) {
 	stt := &MockSTTProvider{
 		transcribeResult: "Hello",
@@ -165,7 +164,6 @@ func TestProcessAudioStream(t *testing.T) {
 	}
 }
 
-
 func TestConfigManagement(t *testing.T) {
 	stt := &MockSTTProvider{}
 	llm := &MockLLMProvider{}
@@ -198,7 +196,6 @@ func TestConfigManagement(t *testing.T) {
 	}
 }
 
-
 func TestHandleInterruption(t *testing.T) {
 	stt := &MockSTTProvider{}
 	llm := &MockLLMProvider{}
@@ -210,7 +207,6 @@ func TestHandleInterruption(t *testing.T) {
 	orch.HandleInterruption(session)
 }
 
-
 func TestConcurrentSessionOperations(t *testing.T) {
 	stt := &MockSTTProvider{transcribeResult: "Hello"}
 	llm := &MockLLMProvider{completeResult: "Hi there"}
@@ -219,7 +215,6 @@ func TestConcurrentSessionOperations(t *testing.T) {
 	orch := New(stt, llm, tts, DefaultConfig())
 	session := NewConversationSession("concurrent_test")
 
-	
 	numGoroutines := 10
 	done := make(chan bool, numGoroutines)
 
@@ -233,17 +228,14 @@ func TestConcurrentSessionOperations(t *testing.T) {
 		}()
 	}
 
-	
 	for i := 0; i < numGoroutines; i++ {
 		<-done
 	}
 
-	
 	if len(session.Context) == 0 {
 		t.Fatal("session context should not be empty after concurrent operations")
 	}
 }
-
 
 func TestConfigThreadSafety(t *testing.T) {
 	stt := &MockSTTProvider{}
@@ -255,7 +247,6 @@ func TestConfigThreadSafety(t *testing.T) {
 
 	done := make(chan bool, 20)
 
-	
 	for i := 0; i < 10; i++ {
 		go func(val int) {
 			cfg := orch.GetConfig()
@@ -265,7 +256,6 @@ func TestConfigThreadSafety(t *testing.T) {
 		}(i)
 	}
 
-	
 	for i := 0; i < 10; i++ {
 		go func() {
 			_ = orch.GetConfig()
@@ -273,18 +263,15 @@ func TestConfigThreadSafety(t *testing.T) {
 		}()
 	}
 
-	
 	for i := 0; i < 20; i++ {
 		<-done
 	}
 
-	
 	cfg := orch.GetConfig()
 	if cfg.SampleRate == 0 {
 		t.Fatal("config was corrupted")
 	}
 }
-
 
 func TestContextCancellation(t *testing.T) {
 	stt := &MockSTTProvider{transcribeResult: "Hello", transcribeErr: context.Canceled}
@@ -295,14 +282,13 @@ func TestContextCancellation(t *testing.T) {
 	session := NewConversationSession("cancel_test")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() 
+	cancel()
 
 	_, _, err := orch.ProcessAudio(ctx, session, []byte("audio"))
 	if err == nil {
 		t.Fatal("ProcessAudio should return error when context is cancelled")
 	}
 }
-
 
 func TestCustomErrorTypes(t *testing.T) {
 	tests := []struct {
@@ -333,7 +319,6 @@ func TestCustomErrorTypes(t *testing.T) {
 		})
 	}
 }
-
 
 func isErrorType(err error, target error) bool {
 	if err == nil && target == nil {

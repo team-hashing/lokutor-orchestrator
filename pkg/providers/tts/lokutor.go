@@ -41,7 +41,6 @@ func (t *LokutorTTS) getConn(ctx context.Context) (*websocket.Conn, error) {
 		return nil, fmt.Errorf("failed to connect to lokutor: %w", err)
 	}
 
-	
 	conn.SetReadLimit(10 * 1024 * 1024)
 
 	t.conn = conn
@@ -74,7 +73,7 @@ func (t *LokutorTTS) StreamSynthesize(ctx context.Context, text string, voice or
 		"voice":   string(voice),
 		"lang":    string(lang),
 		"speed":   1.0,
-		"steps":   6, 
+		"steps":   6,
 		"visemes": false,
 	}
 
@@ -94,8 +93,7 @@ func (t *LokutorTTS) StreamSynthesize(ctx context.Context, text string, voice or
 
 		switch messageType {
 		case websocket.MessageBinary:
-			
-			
+
 			if err := onChunk(payload); err != nil {
 				return err
 			}
@@ -120,6 +118,20 @@ func (t *LokutorTTS) Close() error {
 	defer t.mu.Unlock()
 	if t.conn != nil {
 		err := t.conn.Close(websocket.StatusNormalClosure, "")
+		t.conn = nil
+		return err
+	}
+	return nil
+}
+
+// Abort forces any in-progress synthesis to stop immediately by closing the
+// underlying websocket connection. This lets callers cancel synthesis quickly.
+func (t *LokutorTTS) Abort() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.conn != nil {
+		// close with abnormal closure so any blocked reads/writes unblock
+		err := t.conn.Close(websocket.StatusAbnormalClosure, "abort")
 		t.conn = nil
 		return err
 	}

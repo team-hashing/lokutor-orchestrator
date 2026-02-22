@@ -1,4 +1,4 @@
-# Lokutor Orchestrator
+# Open Source Voice Orchestrator for Building Voice Assistants - Lokutor Orchestrator
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/lokutor-ai/lokutor-orchestrator.svg)](https://pkg.go.dev/github.com/lokutor-ai/lokutor-orchestrator)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)

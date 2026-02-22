@@ -12,6 +12,7 @@ import (
 
 	"github.com/gen2brain/malgo"
 	"github.com/joho/godotenv"
+	"github.com/lokutor-ai/lokutor-orchestrator/pkg/audio"
 	"github.com/lokutor-ai/lokutor-orchestrator/pkg/orchestrator"
 	llmProvider "github.com/lokutor-ai/lokutor-orchestrator/pkg/providers/llm"
 	sttProvider "github.com/lokutor-ai/lokutor-orchestrator/pkg/providers/stt"
@@ -24,7 +25,7 @@ const (
 )
 
 func main() {
-	
+
 	if err := godotenv.Load(); err != nil {
 		log.Println("Note: No .env file found, using system environment variables")
 	}
@@ -55,7 +56,6 @@ func main() {
 		log.Fatal("Error: LOKUTOR_API_KEY must be set.")
 	}
 
-	
 	var stt orchestrator.STTProvider
 	switch sttProviderName {
 	case "openai":
@@ -86,12 +86,10 @@ func main() {
 		stt = sttProvider.NewGroqSTT(groqKey, groqModel)
 	}
 
-	
 	if s, ok := stt.(interface{ SetSampleRate(int) }); ok {
 		s.SetSampleRate(SampleRate)
 	}
 
-	
 	var llm orchestrator.LLMProvider
 	switch llmProviderName {
 	case "openai":
@@ -125,9 +123,11 @@ func main() {
 
 	tts := ttsProvider.NewLokutorTTS(lokutorKey)
 
-	vad := orchestrator.NewRMSVAD(0.02, 500*time.Millisecond)
-	vad.SetMinConfirmed(3) 
-
+	// Create VAD with aggressive settings for fast interrupt detection
+	// Lower threshold (0.015) catches speech earlier, shorter confirmation (1 frame ~23ms) for quick response
+	vad := orchestrator.NewRMSVAD(0.015, 300*time.Millisecond)
+	// Minimal confirmation frames for maximum responsiveness during interrupt
+	vad.SetMinConfirmed(1)
 	config := orchestrator.DefaultConfig()
 	config.Language = lang
 	orch := orchestrator.NewWithVAD(stt, llm, tts, vad, config)
@@ -146,66 +146,90 @@ func main() {
 	stream := orch.NewManagedStream(ctx, session)
 	defer stream.Close()
 
-	
 	mctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer mctx.Uninit()
 
-	
 	var playbackMu sync.Mutex
 	var playbackBytes []byte
+	var e2eLogged bool
 
-	var rmsMu sync.Mutex
-	lastRMS := 0.0
+	// Mic capture decoupled from the audio callback thread!
+	// This completely prevents stream.Write (which does heavy VAD/STT correlation)
+	// from blocking the speaker playback, eliminating audio gaps.
+	inputChan := make(chan []byte, 1024)
+	go func() {
+		for chunk := range inputChan {
+			_ = stream.Write(chunk)
+		}
+	}()
 
 	onSamples := func(pOutput, pInput []byte, frameCount uint32) {
+		// CAPTURE: Copy input and send to channel asynchronously
 		if pInput != nil {
-			
-			_ = stream.Write(pInput)
-
-			
-			rmsMu.Lock()
-			lastRMS = vad.LastRMS()
-			rmsMu.Unlock()
+			inCopy := make([]byte, len(pInput))
+			copy(inCopy, pInput)
+			select {
+			case inputChan <- inCopy:
+			default:
+				// Drop if the pipeline falls too far behind to keep real-time
+			}
 		}
+
+		// PLAYBACK: Minimize lock hold time to prevent audio artifacts
 		if pOutput != nil {
 			playbackMu.Lock()
+			audioLen := len(playbackBytes)
+			playbackMu.Unlock()
 
-			
-			
-			if len(playbackBytes) < len(pOutput)/2 && len(playbackBytes) < 2048 {
+			// Only wait for buffer if we have absolutely nothing queued
+			// Otherwise, start playback immediately and gracefully handle underruns
+			if audioLen == 0 {
+				// Complete underrun - output silence
 				for i := range pOutput {
 					pOutput[i] = 0
 				}
-				playbackMu.Unlock()
 				return
 			}
 
-			
+			// Determine how much to copy
 			bytesToCopy := len(pOutput)
-			if len(playbackBytes) < bytesToCopy {
-				bytesToCopy = len(playbackBytes)
+			if audioLen < bytesToCopy {
+				bytesToCopy = audioLen
 			}
-			
-			bytesToCopy -= bytesToCopy % 2
+			bytesToCopy -= bytesToCopy % 2 // Keep samples aligned
 
+			// Copy data (hold lock only for this operation)
+			playbackMu.Lock()
 			n := copy(pOutput[:bytesToCopy], playbackBytes[:bytesToCopy])
 			playbackBytes = playbackBytes[n:]
+			playbackMu.Unlock()
 
-			
+			// Notify after lock is released
 			if n > 0 {
+				// record exact samples being played so echo suppressor has accurate reference
+				stream.RecordPlayedOutput(pOutput[:n])
 				stream.NotifyAudioPlayed()
+				// Log end-to-end (user -> actual audio playback) once per turn
+				if !e2eLogged {
+					bd := stream.GetLatencyBreakdown()
+					// only print when we have meaningful data
+					if bd.UserToPlay > 0 || bd.UserToTTSFirstByte > 0 || bd.UserToLLM > 0 || bd.UserToSTT > 0 {
+						fmt.Printf("\r\033[K⏱️ [LATENCY] user→stt=%dms stt=%dms user→llm=%dms llm=%dms user→tts_first=%dms llm→tts_first=%dms tts_total=%dms user→play=%dms\n",
+							bd.UserToSTT, bd.STT, bd.UserToLLM, bd.LLM, bd.UserToTTSFirstByte, bd.LLMToTTSFirstByte, bd.TTSTotal, bd.UserToPlay)
+						e2eLogged = true
+					}
+				}
 			}
 
-			
+			// Pad remaining output with silence (graceful underrun)
 			if n < len(pOutput) {
 				for i := n; i < len(pOutput); i++ {
 					pOutput[i] = 0
 				}
 			}
-			playbackMu.Unlock()
 		}
 	}
 
@@ -215,7 +239,7 @@ func main() {
 	deviceConfig.Playback.Format = malgo.FormatS16
 	deviceConfig.Playback.Channels = 1
 	deviceConfig.SampleRate = SampleRate
-	deviceConfig.Alsa.NoMMap = 1 
+	deviceConfig.Alsa.NoMMap = 1
 
 	device, err := malgo.InitDevice(mctx.Context, deviceConfig, malgo.DeviceCallbacks{
 		Data: onSamples,
@@ -229,28 +253,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	
-	go func() {
-		for {
-			rmsMu.Lock()
-			level := lastRMS
-			rmsMu.Unlock()
-
-			if level >= 0.0 {
-				meter := ""
-				dots := int(level * 500) 
-				if dots > 40 {
-					dots = 40
-				}
-				for i := 0; i < dots; i++ {
-					meter += "|"
-				}
-				fmt.Printf("\r[MIC ENERGY: %-40s] RMS: %.5f", meter, level)
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-	}()
-
+	// Event loop: handle orchestrator events and update playback buffer / device
 	go func() {
 		for event := range stream.Events() {
 			switch event.Type {
@@ -260,17 +263,41 @@ func main() {
 				fmt.Printf("\r\033[K⌛ [STT] Processing...\n")
 			case orchestrator.TranscriptFinal:
 				fmt.Printf("\r\033[K📝 [TRANSCRIPT] %s\n", event.Data.(string))
+				// export last captured user audio (raw + post-processed) for debugging
+				raw, proc := stream.ExportLastUserAudio()
+				if raw != nil {
+					ts := time.Now().Format("20060102-150405")
+					rawPath := fmt.Sprintf("/tmp/lokutor_user_raw_%s.wav", ts)
+					procPath := fmt.Sprintf("/tmp/lokutor_user_processed_%s.wav", ts)
+					_ = os.WriteFile(rawPath, audio.NewWavBuffer(raw, SampleRate), 0644)
+					_ = os.WriteFile(procPath, audio.NewWavBuffer(proc, SampleRate), 0644)
+					fmt.Printf("\r\033[K💾 Saved user audio: %s (raw), %s (processed)\n", rawPath, procPath)
+				}
+
 			case orchestrator.BotThinking:
 				fmt.Printf("\r\033[K🧠 [LLM] Thinking...\n")
+			case orchestrator.BotResponse:
+				// print the assistant's textual response when available
+				if resp, ok := event.Data.(string); ok {
+					fmt.Printf("\r\033[K💬 [AGENT] %s\n", resp)
+				}
 			case orchestrator.BotSpeaking:
-				fmt.Printf("\r\033[K🔊 [TTS] Speaking...\n")
+				latency := stream.GetLatency()
+				if latency > 0 {
+					fmt.Printf("\r\033[K🔊 [TTS] Speaking... (latency: %dms)\n", latency)
+				} else {
+					fmt.Printf("\r\033[K🔊 [TTS] Speaking...\n")
+				}
 			case orchestrator.AudioChunk:
 				chunk := event.Data.([]byte)
 				playbackMu.Lock()
 				playbackBytes = append(playbackBytes, chunk...)
 				playbackMu.Unlock()
+
 			case orchestrator.Interrupted:
 				fmt.Printf("\r\033[K🛑 [INTERRUPTED] User started talking.\n")
+				// Fast interruption: just clear the playback buffer instead of stopping device
+				// This is much more responsive than device.Stop()/Start() which can add latency
 				playbackMu.Lock()
 				playbackBytes = nil
 				playbackMu.Unlock()
@@ -280,8 +307,24 @@ func main() {
 		}
 	}()
 
+	// Wait for SIGINT / SIGTERM and perform best-effort cleanup so the
+	// audio thread and streams are unblocked before exit.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-	fmt.Printf("\nShutting down...\n")
+	sigReceived := <-sig
+	fmt.Printf("\nShutting down (signal=%v)...\n", sigReceived)
+
+	// stop audio device to ensure audio callback returns promptly
+	fmt.Println("debug: calling device.Stop()")
+	_ = device.Stop()
+	fmt.Println("debug: device.Stop() returned")
+
+	// explicitly close stream to cancel pipelines
+	fmt.Println("debug: calling stream.Close()")
+	stream.Close()
+	fmt.Println("debug: stream.Close() returned")
+
+	// give a small grace period for cleanup
+	time.Sleep(50 * time.Millisecond)
+	fmt.Println("debug: exiting main")
 }
