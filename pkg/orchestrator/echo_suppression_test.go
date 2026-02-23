@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -38,38 +39,63 @@ func pcmEnergy(b []byte) float64 {
 	return sum
 }
 
-func TestEchoSuppressor_PostProcess(t *testing.T) {
-	// synthesize: played audio (A), user audio (B). Mic contains attenuated A (echo)
-	// followed by B. PostProcess should mute segments matching A but keep B.
-	sr := 44100
-	played := generateSine(440, 500, sr, 0.8) // 0.5s
-	user := generateSine(1200, 300, sr, 0.8)  // 0.3s (different freq)
+// helper to convert float64 samples back to 16-bit bytes (little-endian)
+func samplesToBytes(samples []float64) []byte {
+	buf := make([]byte, len(samples)*2)
+	for i, v := range samples {
+		s := int16(v * 32767)
+		buf[2*i] = byte(s)
+		buf[2*i+1] = byte(s >> 8)
+	}
+	return buf
+}
 
-	// mic: silence (100ms) + echo(played attenuated) + user + echo
-	silence := make([]byte, sr*100/1000*2)
-	echoAtt := make([]byte, len(played))
-	for i := 0; i < len(played); i += 2 {
-		// attenuate by 0.25
-		s := int16(played[i]) | (int16(played[i+1]) << 8)
-		s = int16(float64(s) * 0.25)
-		echoAtt[i] = byte(s)
-		echoAtt[i+1] = byte(s >> 8)
+// run a PostProcess scenario with the provided rates, generating a simple
+// played tone and a different user tone. Returns the processed output for
+// further inspection.
+func runPostProcessScenario(t *testing.T, playRate, inputRate int) {
+	// create sine waves at the respective sample rates
+	played := generateSine(440, 500, playRate, 0.8)
+	user := generateSine(1200, 300, inputRate, 0.8)
+
+	// build mic input: 100ms silence + attenuated played (resampled if needed) + user + replayed echo
+	var echoAtt []byte
+	if playRate == inputRate {
+		echoAtt = make([]byte, len(played))
+		for i := 0; i < len(played); i += 2 {
+			// attenuate by 0.25
+			s := int16(played[i]) | (int16(played[i+1]) << 8)
+			s = int16(float64(s) * 0.25)
+			echoAtt[i] = byte(s)
+			echoAtt[i+1] = byte(s >> 8)
+		}
+	} else {
+		// resample played audio to input rate before attenuating
+		ps := bytesToSamples(played)
+		rs := resample(ps, playRate, inputRate)
+		echoAtt = samplesToBytes(rs)
+		for i := 0; i < len(echoAtt); i += 2 {
+			s := int16(echoAtt[i]) | (int16(echoAtt[i+1]) << 8)
+			s = int16(float64(s) * 0.25)
+			echoAtt[i] = byte(s)
+			echoAtt[i+1] = byte(s >> 8)
+		}
 	}
 
+	silence := make([]byte, inputRate*100/1000*2)
 	mic := append([]byte{}, silence...)
 	mic = append(mic, echoAtt...)
 	mic = append(mic, user...)
 	mic = append(mic, echoAtt...)
 
-	es := NewEchoSuppressor()
-	// feed reference (what was played to speaker)
+	// configure suppressor
+	es := NewEchoSuppressorWithRates(playRate, inputRate)
 	es.RecordPlayedAudio(played)
-	// ensure postprocess uses reference even if lastTTSTime check would block
 	es.lastTTSTime = time.Now()
 
 	out := es.PostProcess(mic)
 
-	// measure energies around known offsets
+	// evaluate energies
 	offEcho1 := len(silence)
 	offUser := offEcho1 + len(echoAtt)
 	offEcho2 := offUser + len(user)
@@ -78,61 +104,109 @@ func TestEchoSuppressor_PostProcess(t *testing.T) {
 	eEcho1After := pcmEnergy(out[offEcho1 : offEcho1+len(echoAtt)])
 	eUserBefore := pcmEnergy(mic[offUser : offUser+len(user)])
 	eUserAfter := pcmEnergy(out[offUser : offUser+len(user)])
-	// second echo
 	eEcho2Before := pcmEnergy(mic[offEcho2 : offEcho2+len(echoAtt)])
 	eEcho2After := pcmEnergy(out[offEcho2 : offEcho2+len(echoAtt)])
 
-	// Expect echo energy reduced by large factor (>90%) while user energy preserved
 	if eEcho1After > eEcho1Before*0.2 {
-		t.Fatalf("echo1 not sufficiently suppressed: before=%v after=%v", eEcho1Before, eEcho1After)
+		t.Fatalf("echo1 not sufficiently suppressed at rates play=%d input=%d: before=%v after=%v", playRate, inputRate, eEcho1Before, eEcho1After)
 	}
 	if eEcho2After > eEcho2Before*0.2 {
-		t.Fatalf("echo2 not sufficiently suppressed: before=%v after=%v", eEcho2Before, eEcho2After)
+		t.Fatalf("echo2 not sufficiently suppressed at rates play=%d input=%d: before=%v after=%v", playRate, inputRate, eEcho2Before, eEcho2After)
 	}
 	if math.Abs(eUserAfter-eUserBefore) > eUserBefore*0.05 {
-		t.Fatalf("user audio altered unexpectedly: before=%v after=%v", eUserBefore, eUserAfter)
+		t.Fatalf("user audio altered unexpectedly at rates play=%d input=%d: before=%v after=%v", playRate, inputRate, eUserBefore, eUserAfter)
 	}
 
-	// write WAV files to /tmp for manual inspection
-	tmp := os.TempDir()
-	inPath := filepath.Join(tmp, "echo_test_input.wav")
-	outPath := filepath.Join(tmp, "echo_test_output.wav")
-	_ = os.WriteFile(inPath, audio.NewWavBuffer(mic, sr), 0644)
-	_ = os.WriteFile(outPath, audio.NewWavBuffer(out, sr), 0644)
+	// optionally drop files for manual inspection (quiet unless verbose)
+	if testing.Verbose() {
+		tmp := os.TempDir()
+		inPath := filepath.Join(tmp, fmt.Sprintf("echo_test_input_%d_%d.wav", playRate, inputRate))
+		outPath := filepath.Join(tmp, fmt.Sprintf("echo_test_output_%d_%d.wav", playRate, inputRate))
+		_ = os.WriteFile(inPath, audio.NewWavBuffer(mic, inputRate), 0644)
+		_ = os.WriteFile(outPath, audio.NewWavBuffer(out, inputRate), 0644)
+		t.Logf("wrote test files: %s, %s", inPath, outPath)
+	}
+}
 
-	// brief helpful log for developer
-	t.Logf("wrote test files: %s, %s (inspect manually)", inPath, outPath)
+func TestEchoSuppressor_PostProcess(t *testing.T) {
+	t.Run("same-rate", func(t *testing.T) {
+		runPostProcessScenario(t, 44100, 44100)
+	})
+	t.Run("mismatch-44k-to-16k", func(t *testing.T) {
+		runPostProcessScenario(t, 44100, 16000)
+	})
 }
 
 func TestEchoSuppressor_IsEchoCorrelation(t *testing.T) {
-	// Sanity-check maxCorrelationSamples + IsEcho
+	scenarios := []struct {
+		name      string
+		playRate  int
+		inputRate int
+	}{
+		{"same-rate", 44100, 44100},
+		{"mismatch-44k-to-16k", 44100, 16000},
+	}
+
+	for _, sc := range scenarios {
+		t.Run(sc.name, func(t *testing.T) {
+			// sanity-check maxCorrelationSamples + IsEcho with configured rates
+			es := NewEchoSuppressorWithRates(sc.playRate, sc.inputRate)
+			played := generateSine(440, 200, sc.playRate, 0.8)
+			es.RecordPlayedAudio(played)
+			es.lastTTSTime = time.Now()
+
+			frame := played[len(played)-1764:]
+			if sc.playRate != sc.inputRate {
+				// resample to input rate before passing to IsEcho()
+				samp := bytesToSamples(frame)
+				frame = samplesToBytes(resample(samp, sc.playRate, sc.inputRate))
+			}
+
+			ref := es.getRecentSamples(0)
+			threshold := 0.80
+
+			// compute correlation against reference; resample input back up if
+			// necessary so that the two arrays are comparable.
+			inp := bytesToSamples(frame)
+			if sc.playRate != sc.inputRate {
+				inp = resample(inp, sc.inputRate, sc.playRate)
+			}
+			corr := es.maxCorrelationSamples(inp, ref)
+			if corr <= threshold {
+				t.Fatalf("expected high correlation for identical frame; corr=%v threshold=%v", corr, threshold)
+			}
+			if !es.IsEcho(frame) {
+				t.Fatalf("IsEcho returned false despite corr=%v", corr)
+			}
+
+			different := generateSine(880, 200, sc.playRate, 0.8)
+			frame2 := different[:1764]
+			if sc.playRate != sc.inputRate {
+				samp := bytesToSamples(frame2)
+				frame2 = samplesToBytes(resample(samp, sc.playRate, sc.inputRate))
+			}
+			inp2 := bytesToSamples(frame2)
+			if sc.playRate != sc.inputRate {
+				inp2 = resample(inp2, sc.inputRate, sc.playRate)
+			}
+			corr2 := es.maxCorrelationSamples(inp2, ref)
+			if corr2 > threshold {
+				t.Fatalf("unexpectedly high correlation for different signal; corr=%v", corr2)
+			}
+			if es.IsEcho(frame2) {
+				t.Fatal("unexpected echo detection for different signal")
+			}
+		})
+	}
+}
+
+func TestEchoSuppressor_SetSampleRates(t *testing.T) {
 	es := NewEchoSuppressor()
-	played := generateSine(440, 200, 44100, 0.8)
-	es.RecordPlayedAudio(played)
-	es.lastTTSTime = time.Now()
-
-	// identical frame (use tail to match refCompare behavior) should be detected as echo
-	frame := played[len(played)-1764:]
-
-	ref := es.getRecentSamples(0)
-	threshold := 0.80 // use default or read from es if accessible safely
-
-	corr := es.maxCorrelationSamples(bytesToSamples(frame), ref)
-	if corr <= threshold {
-		t.Fatalf("expected high correlation for identical frame; corr=%v threshold=%v", corr, threshold)
+	if es.playbackSampleRate != 44100 || es.inputSampleRate != 44100 {
+		t.Fatalf("default rates incorrect: got %d/%d", es.playbackSampleRate, es.inputSampleRate)
 	}
-	if !es.IsEcho(frame) {
-		t.Fatalf("IsEcho returned false despite corr=%v", corr)
-	}
-
-	// different frequency should NOT be detected
-	different := generateSine(880, 200, 44100, 0.8)
-	frame2 := different[:1764]
-	corr2 := es.maxCorrelationSamples(bytesToSamples(frame2), ref)
-	if corr2 > threshold {
-		t.Fatalf("unexpectedly high correlation for different signal; corr=%v", corr2)
-	}
-	if es.IsEcho(frame2) {
-		t.Fatal("unexpected echo detection for different signal")
+	es.SetSampleRates(48000, 16000)
+	if es.playbackSampleRate != 48000 || es.inputSampleRate != 16000 {
+		t.Fatalf("SetSampleRates did not update fields: got %d/%d", es.playbackSampleRate, es.inputSampleRate)
 	}
 }
