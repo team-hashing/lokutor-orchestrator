@@ -123,13 +123,14 @@ func main() {
 
 	tts := ttsProvider.NewLokutorTTS(lokutorKey)
 
-	// Create VAD with aggressive settings for fast interrupt detection
-	// Lower threshold (0.015) catches speech earlier, shorter confirmation (1 frame ~23ms) for quick response
-	vad := orchestrator.NewRMSVAD(0.015, 300*time.Millisecond)
-	// Minimal confirmation frames for maximum responsiveness during interrupt
-	vad.SetMinConfirmed(1)
+	// Create VAD with settings balanced for speed and noise immunity
+	// Threshold (0.025) provides better rejection of background noise
+	vad := orchestrator.NewRMSVAD(0.025, 800*time.Millisecond)
+	// Requires 4 consecutive frames (~92ms) to confirm speech start
+	vad.SetMinConfirmed(4)
 	config := orchestrator.DefaultConfig()
 	config.Language = lang
+	config.MinWordsToInterrupt = 1
 	orch := orchestrator.NewWithVAD(stt, llm, tts, vad, config)
 
 	session := orch.NewSessionWithDefaults("user_123")
@@ -155,26 +156,43 @@ func main() {
 	var playbackMu sync.Mutex
 	var playbackBytes []byte
 	var e2eLogged bool
+	var preRolling bool = true
+	const preRollSize = 44100 * 2 * 200 / 1000 // 200ms of audio (44.1kHz, 16-bit, mono)
 
-	// Mic capture decoupled from the audio callback thread!
-	// This completely prevents stream.Write (which does heavy VAD/STT correlation)
-	// from blocking the speaker playback, eliminating audio gaps.
+	// Buffer pool to avoid allocations in the real-time thread
+	chunkPool := sync.Pool{
+		New: func() interface{} {
+			return make([]byte, 8192) // Large enough for any frame
+		},
+	}
+
+	// Mic capture decoupled from the audio callback thread
 	inputChan := make(chan []byte, 1024)
 	go func() {
 		for chunk := range inputChan {
 			_ = stream.Write(chunk)
+			chunkPool.Put(chunk)
+		}
+	}()
+
+	// Decouple played output recording
+	playedChan := make(chan []byte, 1024)
+	go func() {
+		for chunk := range playedChan {
+			stream.RecordPlayedOutput(chunk)
+			chunkPool.Put(chunk)
 		}
 	}()
 
 	onSamples := func(pOutput, pInput []byte, frameCount uint32) {
 		// CAPTURE: Copy input and send to channel asynchronously
 		if pInput != nil {
-			inCopy := make([]byte, len(pInput))
-			copy(inCopy, pInput)
+			buf := chunkPool.Get().([]byte)
+			n := copy(buf, pInput)
 			select {
-			case inputChan <- inCopy:
+			case inputChan <- buf[:n]:
 			default:
-				// Drop if the pipeline falls too far behind to keep real-time
+				chunkPool.Put(buf)
 			}
 		}
 
@@ -182,12 +200,22 @@ func main() {
 		if pOutput != nil {
 			playbackMu.Lock()
 			audioLen := len(playbackBytes)
-			playbackMu.Unlock()
+
+			// Handle pre-roll to avoid gaps due to jitter
+			if preRolling {
+				if audioLen < preRollSize {
+					playbackMu.Unlock()
+					for i := range pOutput {
+						pOutput[i] = 0
+					}
+					return
+				}
+				preRolling = false
+			}
 
 			// Only wait for buffer if we have absolutely nothing queued
-			// Otherwise, start playback immediately and gracefully handle underruns
 			if audioLen == 0 {
-				// Complete underrun - output silence
+				playbackMu.Unlock()
 				for i := range pOutput {
 					pOutput[i] = 0
 				}
@@ -201,21 +229,26 @@ func main() {
 			}
 			bytesToCopy -= bytesToCopy % 2 // Keep samples aligned
 
-			// Copy data (hold lock only for this operation)
-			playbackMu.Lock()
+			// Copy data
 			n := copy(pOutput[:bytesToCopy], playbackBytes[:bytesToCopy])
 			playbackBytes = playbackBytes[n:]
 			playbackMu.Unlock()
 
 			// Notify after lock is released
 			if n > 0 {
-				// record exact samples being played so echo suppressor has accurate reference
-				stream.RecordPlayedOutput(pOutput[:n])
+				// record exact samples being played
+				buf := chunkPool.Get().([]byte)
+				nc := copy(buf, pOutput[:n])
+				select {
+				case playedChan <- buf[:nc]:
+				default:
+					chunkPool.Put(buf)
+				}
+
 				stream.NotifyAudioPlayed()
 				// Log end-to-end (user -> actual audio playback) once per turn
 				if !e2eLogged {
 					bd := stream.GetLatencyBreakdown()
-					// only print when we have meaningful data
 					if bd.UserToPlay > 0 || bd.UserToTTSFirstByte > 0 || bd.UserToLLM > 0 || bd.UserToSTT > 0 {
 						fmt.Printf("\r\033[K⏱️ [LATENCY] user→stt=%dms stt=%dms user→llm=%dms llm=%dms user→tts_first=%dms llm→tts_first=%dms tts_total=%dms user→play=%dms\n",
 							bd.UserToSTT, bd.STT, bd.UserToLLM, bd.LLM, bd.UserToTTSFirstByte, bd.LLMToTTSFirstByte, bd.TTSTotal, bd.UserToPlay)
@@ -224,7 +257,7 @@ func main() {
 				}
 			}
 
-			// Pad remaining output with silence (graceful underrun)
+			// Pad remaining output with silence
 			if n < len(pOutput) {
 				for i := n; i < len(pOutput); i++ {
 					pOutput[i] = 0
@@ -257,8 +290,18 @@ func main() {
 	go func() {
 		for event := range stream.Events() {
 			switch event.Type {
-			case orchestrator.UserSpeaking:
-				fmt.Printf("\r\033[K🎤 [USER] Speaking...\n")
+			case orchestrator.UserSpeaking, orchestrator.Interrupted:
+				// Stop local playback instantly
+				playbackMu.Lock()
+				playbackBytes = nil
+				preRolling = true
+				playbackMu.Unlock()
+				if event.Type == orchestrator.UserSpeaking {
+					fmt.Printf("\r\033[K🎤 [USER] Speaking...\n")
+				} else {
+					fmt.Printf("\r\033[K🛑 [INTERRUPTED] User started talking.\n")
+				}
+
 			case orchestrator.UserStopped:
 				fmt.Printf("\r\033[K⌛ [STT] Processing...\n")
 			case orchestrator.TranscriptFinal:
@@ -294,13 +337,6 @@ func main() {
 				playbackBytes = append(playbackBytes, chunk...)
 				playbackMu.Unlock()
 
-			case orchestrator.Interrupted:
-				fmt.Printf("\r\033[K🛑 [INTERRUPTED] User started talking.\n")
-				// Fast interruption: just clear the playback buffer instead of stopping device
-				// This is much more responsive than device.Stop()/Start() which can add latency
-				playbackMu.Lock()
-				playbackBytes = nil
-				playbackMu.Unlock()
 			case orchestrator.ErrorEvent:
 				fmt.Printf("\r\033[K❌ [ERROR] %v\n", event.Data)
 			}

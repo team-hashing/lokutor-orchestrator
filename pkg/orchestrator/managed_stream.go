@@ -44,11 +44,12 @@ type ManagedStream struct {
 	ttsFirstChunkTime time.Time // when first audio chunk was emitted by TTS
 	ttsEndTime        time.Time // when TTS finished
 
-	responseCancel   context.CancelFunc
-	ttsCancel        context.CancelFunc // Track TTS context for fast abort
-	userInterrupting bool               // Flag to block audio emission during user barge-in
-	echoSuppressor   *EchoSuppressor    // Echo detection and suppression
-	closeOnce        sync.Once
+	responseCancel     context.CancelFunc
+	ttsCancel          context.CancelFunc // Track TTS context for fast abort
+	userInterrupting   bool               // Flag to block audio emission during user barge-in
+	echoSuppressor     *EchoSuppressor    // Echo detection and suppression
+	lastAudioEmittedAt time.Time          // When the very last audio chunk was sent to speaker
+	closeOnce          sync.Once
 }
 
 func NewManagedStream(ctx context.Context, o *Orchestrator, session *ConversationSession) *ManagedStream {
@@ -115,42 +116,36 @@ func countWords(s string) int {
 	return len(strings.Fields(s))
 }
 
-const speechEndHold = 300 * time.Millisecond
+const speechEndHold = 150 * time.Millisecond
 
 func (ms *ManagedStream) Write(chunk []byte) error {
-	// Avoid holding ms.mu for the entire function — callers (and
-	// startStreamingSTT) also need to acquire ms.mu and that caused a
-	// re-entrancy deadlock in practice.
-
 	if ms.vad == nil {
 		return fmt.Errorf("VAD not configured for this stream")
 	}
 
-	// Temporarily adjust VAD threshold when recent audio was played. This
-	// prevents immediate echo from freshly-played audio from being mistaken
-	// for user speech — but it MUST NOT prevent legitimate user barge-in.
-	// Only apply the aggressive "echo guard" when we are *not* currently
-	// speaking (i.e. playback leftover), so active TTS remains interruptible.
+	// Write processes an incoming audio chunk from the microphone
+
+	// Temporarily adjust VAD threshold when recent audio was played.
 	if rmsVAD, ok := ms.vad.(*RMSVAD); ok {
 		originalThreshold := rmsVAD.Threshold()
 		originalMinConfirmed := rmsVAD.MinConfirmed()
 
 		ms.mu.Lock()
 		speaking := ms.isSpeaking
-		lastSent := ms.lastAudioSentAt
+		isThinking := ms.isThinking
 		ms.mu.Unlock()
 
-		if speaking {
-			// Require more sustained sound to interrupt the bot (e.g., 3 frames ~ 70ms)
-			// to avoid transient noises or small echo slips causing false interruptions,
-			// but keeping it low enough so the user can still barge in easily.
-			if originalMinConfirmed < 3 {
-				rmsVAD.SetMinConfirmed(3)
+		// During active speaking, thinking, or the immediate audio trail, we want to be
+		// sensitive to barge-in (2 frames) but keep a safe threshold (0.10)
+		// to avoid echo-triggering.
+		lastEmitted := ms.lastAudioEmittedAt
+		inTrail := time.Since(lastEmitted) < 1500*time.Millisecond
+		if speaking || isThinking || inTrail {
+			if originalMinConfirmed > 2 {
+				rmsVAD.SetMinConfirmed(2)
 			}
-		} else if time.Since(lastSent) < 250*time.Millisecond {
-			// Only apply aggressive "echo guard" when we recently finished speaking
 			rmsVAD.SetAdaptiveMode(false)
-			rmsVAD.SetThreshold(0.25)
+			rmsVAD.SetThreshold(0.04)
 		}
 
 		defer func() {
@@ -160,27 +155,10 @@ func (ms *ManagedStream) Write(chunk []byte) error {
 		}()
 	}
 
-	// apply realtime echo removal to the incoming mic chunk BEFORE VAD/STT
-	isLikelyEchoByEnergy := false
 	if ms.echoSuppressor != nil {
-		// keep original energy for a relative check
-		origSamples := bytesToSamples(chunk)
-		origEnergy := calculateEnergy(origSamples)
-
-		cleaned := ms.echoSuppressor.RemoveEchoRealtime(chunk)
-
-		cleanedEnergy := calculateEnergy(bytesToSamples(cleaned))
-		// if cleaned energy is both very small OR a small fraction of original,
-		// it's almost certainly echo and we should treat it as such.
-		if cleanedEnergy < 1e-8 || (origEnergy > 0 && cleanedEnergy/origEnergy < 0.02) {
-			isLikelyEchoByEnergy = true
-			// use cleaned (near-zero) so VAD sees silence
-			chunk = cleaned
-		} else {
-			// otherwise pass the cleaned audio through
-			chunk = cleaned
-		}
+		chunk = ms.echoSuppressor.RemoveEchoRealtime(chunk)
 	}
+
 	event, err := ms.vad.Process(chunk)
 	if err != nil {
 		return err
@@ -189,14 +167,14 @@ func (ms *ManagedStream) Write(chunk []byte) error {
 	if event != nil && event.Type != VADSilence {
 		switch event.Type {
 		case VADSpeechStart:
-			// Check if this is echo from speakers before treating as speech
-			// Build a short buffer combining recent captured mic (lead-in) + current chunk
 			ms.mu.Lock()
 			lead := ms.audioBuf.Bytes()
+			speaking := ms.isSpeaking
+			isThinking := ms.isThinking
+			lastEmitted := ms.lastAudioEmittedAt
 			ms.mu.Unlock()
 
-			// keep only last ~100ms of lead audio to improve match stability
-			leadBytes := 8820 // ~100ms @44.1kHz * 2 bytes
+			leadBytes := 8820 // ~100ms @44.1kHz
 			if len(lead) > leadBytes {
 				lead = lead[len(lead)-leadBytes:]
 			}
@@ -204,74 +182,57 @@ func (ms *ManagedStream) Write(chunk []byte) error {
 			checkBuf = append(checkBuf, lead...)
 			checkBuf = append(checkBuf, chunk...)
 
-			if ms.echoSuppressor.IsEcho(checkBuf) {
-				// This audio is primarily echo from our speaker output - ignore it
-				break
+			// Check if this speech start is likely just an echo.
+			isEcho := false
+			if ms.echoSuppressor != nil && ms.echoSuppressor.IsEchoFast(checkBuf) {
+				isEcho = true
 			}
 
-			// If we're currently playing TTS and the mic input arrives
-			// immediately after an audio chunk, it's likely our own
-			// playback being captured — ignore short-lived echoes to avoid
-			// self-interruption.
-			ms.mu.Lock()
-			speaking := ms.isSpeaking
-			lastSent := ms.lastAudioSentAt
-			ms.mu.Unlock()
+			// Barge-in if speaking, thinking, or recently finished speaking (trail).
+			canBargeIn := (speaking || isThinking || time.Since(lastEmitted) < 1500*time.Millisecond)
 
-			if speaking && time.Since(lastSent) < 120*time.Millisecond {
-				// treat as silence/ignore this VAD event
-				break
-			}
-
-			// If assistant is currently speaking, treat this as an IMMEDIATE user barge-in:
-			// 1. Set userInterrupting flag to block new audio chunks
-			// 2. Cancel streaming STT context to stop processing
-			// 3. Keep audio buffer - we need it for the new STT session!
-			// 4. Cancel all pending responses
-			// 5. Restart streaming STT for fresh user input
-			if speaking {
+			// If it's a valid barge-in (not echo), kill current turn and start STT
+			if canBargeIn && !isEcho {
 				ms.mu.Lock()
 				ms.userInterrupting = true
-				ms.sttGeneration++ // Invalidate old STT callbacks
-				// Cancel pipeline context to stop any in-flight STT (don't close the channel)
+				ms.sttGeneration++
 				pipelineCancel := ms.pipelineCancel
 				ms.pipelineCancel = nil
 				ms.sttChan = nil
-				// NOTE: Don't clear audio buffer here - we need it for the new STT!
 				ms.mu.Unlock()
 
-				// Cancel context outside the lock to avoid deadlocks
 				if pipelineCancel != nil {
 					pipelineCancel()
 				}
 
 				ms.emit(UserSpeaking, nil)
 				ms.internalInterrupt()
+
 				if sProvider, ok := ms.orch.stt.(StreamingSTTProvider); ok {
 					ms.startStreamingSTT(sProvider)
 				}
 				break
 			}
 
-			// not speaking: normal user turn — emit and interrupt pending response
-			ms.emit(UserSpeaking, nil)
-			// reset per-turn instrumentation timestamps
-			ms.mu.Lock()
-			ms.sttStartTime = time.Time{}
-			ms.sttEndTime = time.Time{}
-			ms.llmStartTime = time.Time{}
-			ms.llmEndTime = time.Time{}
-			ms.ttsStartTime = time.Time{}
-			ms.ttsFirstChunkTime = time.Time{}
-			ms.ttsEndTime = time.Time{}
-			ms.lastUserAudio = nil
-			ms.mu.Unlock()
+			// Normal turn start (if not already barge-in)
+			if !isEcho {
+				ms.emit(UserSpeaking, nil)
+				ms.mu.Lock()
+				ms.sttStartTime = time.Now()
+				ms.sttEndTime = time.Time{}
+				ms.llmStartTime = time.Time{}
+				ms.llmEndTime = time.Time{}
+				ms.ttsStartTime = time.Time{}
+				ms.ttsFirstChunkTime = time.Time{}
+				ms.ttsEndTime = time.Time{}
+				ms.lastUserAudio = nil
+				ms.mu.Unlock()
 
-			ms.internalInterrupt()
+				ms.internalInterrupt()
 
-			// start streaming STT without holding ms.mu to avoid deadlock
-			if sProvider, ok := ms.orch.stt.(StreamingSTTProvider); ok {
-				ms.startStreamingSTT(sProvider)
+				if sProvider, ok := ms.orch.stt.(StreamingSTTProvider); ok {
+					ms.startStreamingSTT(sProvider)
+				}
 			}
 
 		case VADSpeechEnd:
@@ -280,18 +241,11 @@ func (ms *ManagedStream) Write(chunk []byte) error {
 			ms.mu.Unlock()
 			ms.emit(UserStopped, nil)
 
-			// Capture current audio buffer under lock and schedule a short
-			// hold before finalizing the user's turn. If speech resumes during
-			// the hold, re-insert the captured audio back into the buffer and
-			// don't transcribe yet. This prevents premature truncation of
-			// user utterances caused by brief pauses.
 			ms.mu.Lock()
 			sttChan := ms.sttChan
 			if sttChan != nil {
-				ms.sttChan = nil // Stop sending new audio to STT provider
+				ms.sttChan = nil
 				ms.mu.Unlock()
-				// DO NOT cancel the context - let STT provider finish processing audio it has
-				// The context will be cancelled later when speech resumes or timeout occurs
 			} else {
 				audioData := make([]byte, ms.audioBuf.Len())
 				copy(audioData, ms.audioBuf.Bytes())
@@ -299,13 +253,11 @@ func (ms *ManagedStream) Write(chunk []byte) error {
 				ms.mu.Unlock()
 
 				go func(buf []byte) {
-					// short grace period to allow resumption of speech
 					t := time.NewTimer(speechEndHold)
 					defer t.Stop()
 
 					select {
 					case <-t.C:
-						// if VAD now reports speaking, reinsert buffer and abort
 						if rmsVAD, ok := ms.vad.(*RMSVAD); ok {
 							if rmsVAD.IsSpeaking() {
 								ms.mu.Lock()
@@ -314,7 +266,6 @@ func (ms *ManagedStream) Write(chunk []byte) error {
 								return
 							}
 						}
-						// otherwise proceed with batch transcription
 						ms.runBatchPipeline(buf)
 					case <-ms.ctx.Done():
 						return
@@ -327,73 +278,69 @@ func (ms *ManagedStream) Write(chunk []byte) error {
 		}
 	}
 
-	// forward chunk to streaming STT if present (read sttChan under lock,
-	// perform non-blocking send outside the lock)
-	// First, check whether this chunk appears to be echo of our own playback.
-	isEcho := false
-	if ms.echoSuppressor != nil {
-		// build a small context buffer (tail of audioBuf + current chunk) to
-		// improve correlation stability
-		ms.mu.Lock()
-		lead := ms.audioBuf.Bytes()
-		ms.mu.Unlock()
-
-		leadBytes := 8820 // ~100ms @44.1kHz * 2 bytes
-		if len(lead) > leadBytes {
-			lead = lead[len(lead)-leadBytes:]
-		}
-		check := make([]byte, 0, len(lead)+len(chunk))
-		check = append(check, lead...)
-		check = append(check, chunk...)
-		if ms.echoSuppressor.IsEcho(check) {
-			isEcho = true
-		}
-	}
-
-	// also respect the earlier energy-based decision made during realtime removal
-	if isLikelyEchoByEnergy {
-		isEcho = true
-	}
-	ms.mu.Lock()
-	sttChan := ms.sttChan
-	// Only accumulate user audio and forward to STT when this chunk is NOT echo
-	if sttChan != nil && !isEcho {
-		ms.lastUserAudio = append(ms.lastUserAudio, chunk...)
-	}
-	ms.mu.Unlock()
-
-	if sttChan != nil && !isEcho {
-		select {
-		case sttChan <- chunk:
-		default:
-		}
-	}
-
-	// append to audio buffer under lock
 	isUserSpeaking := false
 	if rmsVAD, ok := ms.vad.(*RMSVAD); ok {
 		isUserSpeaking = rmsVAD.IsSpeaking()
 	}
 
 	ms.mu.Lock()
-	// If this chunk was detected as echo earlier, don't add it to the rolling
-	// buffer that we later feed into STT — prevents self-transcription.
-	if !isEcho {
-		ms.audioBuf.Write(chunk)
-		// Keep a rolling buffer of ~2 seconds of audio pre-speech detection
-		// At 44100 Hz, 16-bit mono: 2 seconds = 44100 * 2 * 2 bytes = 176,400 bytes
-		// This ensures we capture the full beginning of user speech for accurate transcription
-		if !isUserSpeaking && ms.audioBuf.Len() > 176400 {
-			data := ms.audioBuf.Bytes()
-			// Keep only the last 1.5 seconds (132,300 bytes)
-			leadIn := data[len(data)-132300:]
-			ms.audioBuf.Reset()
-			ms.audioBuf.Write(leadIn)
-		}
+	ms.audioBuf.Write(chunk)
+	if !isUserSpeaking && ms.audioBuf.Len() > 176400 {
+		data := ms.audioBuf.Bytes()
+		leadIn := data[len(data)-132300:]
+		ms.audioBuf.Reset()
+		ms.audioBuf.Write(leadIn)
 	}
 	ms.mu.Unlock()
 
+	ms.mu.Lock()
+	sttChan := ms.sttChan
+	if sttChan != nil {
+		ms.lastUserAudio = append(ms.lastUserAudio, chunk...)
+	}
+	ms.mu.Unlock()
+
+	if sttChan != nil {
+		select {
+		case sttChan <- chunk:
+		default:
+		}
+	}
+
 	return nil
+}
+
+// isLikelyNoise uses a density-based heuristic to filter out STT hallucinations.
+// It compares the duration of the audio segment to the number of words produced.
+// High duration with very low word count is a classic sign of STT artifacts
+// triggered by background noise (fans, hums, etc).
+func isLikelyNoise(transcript string, audioDuration time.Duration) bool {
+	t := strings.TrimSpace(transcript)
+	if t == "" {
+		return true
+	}
+
+	// Filter out very short transient noises (clicks, coughs)
+	// that are too short to be meaningful speech (< 100ms).
+	if audioDuration < 100*time.Millisecond {
+		return true
+	}
+
+	wordCount := len(strings.Fields(t))
+
+	// Density check: If we have a long audio segment but very few words,
+	// it's likely the STT 'hallucinating' on background noise.
+	// 1 word from > 1.2 seconds of audio is often noise (Whisper artifact).
+	if wordCount == 1 && audioDuration > 1200*time.Millisecond {
+		return true
+	}
+
+	// 2 words from > 3 seconds of audio is also highly suspicious.
+	if wordCount <= 2 && audioDuration > 3000*time.Millisecond {
+		return true
+	}
+
+	return false
 }
 
 func (ms *ManagedStream) startStreamingSTT(provider StreamingSTTProvider) {
@@ -437,24 +384,43 @@ func (ms *ManagedStream) startStreamingSTT(provider StreamingSTTProvider) {
 					return nil
 				}
 				// reached threshold -> interrupt assistant
-				ms.internalInterrupt()
+				ms.mu.Lock()
+				duration := time.Since(ms.sttStartTime)
+				ms.mu.Unlock()
+				if !isLikelyNoise(transcript, duration) {
+					ms.internalInterrupt()
+				}
 			} else {
 				// minWords == 1 while assistant is speaking -> any transcript
 				// (including partial) should trigger an interrupt (barge-in).
-				if strings.TrimSpace(transcript) != "" {
+				ms.mu.Lock()
+				duration := time.Since(ms.sttStartTime)
+				ms.mu.Unlock()
+				if strings.TrimSpace(transcript) != "" && !isLikelyNoise(transcript, duration) {
 					ms.internalInterrupt()
 				}
 			}
 		} else if thinking && strings.TrimSpace(transcript) != "" {
-			// Bot is thinking (generating response) - interrupt immediately on any speech
-			ms.internalInterrupt()
+			ms.mu.Lock()
+			duration := time.Since(ms.sttStartTime)
+			ms.mu.Unlock()
+			if !isLikelyNoise(transcript, duration) {
+				// Bot is thinking (generating response) - interrupt immediately on any speech
+				ms.internalInterrupt()
+			}
 		}
 
 		if isFinal {
 			// record STT final timestamp for instrumentation
 			ms.mu.Lock()
 			ms.sttEndTime = time.Now()
+			duration := time.Since(ms.sttStartTime)
 			ms.mu.Unlock()
+
+			// Don't respond to hallucinations as final user turn
+			if isLikelyNoise(transcript, duration) {
+				return nil
+			}
 
 			ms.emit(TranscriptFinal, transcript)
 			ms.session.AddMessage("user", transcript)
@@ -524,7 +490,10 @@ func (ms *ManagedStream) runBatchPipeline(audioData []byte) {
 		return
 	}
 
-	if transcript == "" {
+	// Calculate duration for batch pipeline (44.1kHz, 16-bit mono)
+	audioDuration := time.Duration(len(audioData)/2) * time.Second / 44100
+
+	if transcript == "" || isLikelyNoise(transcript, audioDuration) {
 		return
 	}
 
@@ -622,6 +591,7 @@ func (ms *ManagedStream) runLLMAndTTS(ctx context.Context, transcript string) {
 		default:
 			ms.mu.Lock()
 			ms.lastAudioSentAt = time.Now()
+			ms.lastAudioEmittedAt = ms.lastAudioSentAt
 			// record first-chunk timestamp for instrumentation
 			if ms.ttsFirstChunkTime.IsZero() {
 				ms.ttsFirstChunkTime = time.Now()
@@ -656,6 +626,7 @@ func (ms *ManagedStream) runLLMAndTTS(ctx context.Context, transcript string) {
 func (ms *ManagedStream) NotifyAudioPlayed() {
 	ms.mu.Lock()
 	ms.lastAudioSentAt = time.Now()
+	ms.lastAudioEmittedAt = ms.lastAudioSentAt
 	ms.mu.Unlock()
 }
 
@@ -869,8 +840,11 @@ func (ms *ManagedStream) internalInterrupt() {
 	// (fixes race condition that caused deadlocks)
 	ms.mu.Lock()
 
-	// Check if there's anything to interrupt
-	if ms.pipelineCancel == nil && ms.responseCancel == nil && ms.ttsCancel == nil && !ms.isSpeaking && !ms.isThinking && !ms.userInterrupting {
+	// Check if there's anything to interrupt.
+	// We also allow interruption if we *recently* finished speaking (1500ms trail)
+	// to ensure the user can clear any local buffers at the end of a sentence.
+	recentActivity := time.Since(ms.lastAudioEmittedAt) < 1500*time.Millisecond
+	if ms.pipelineCancel == nil && ms.responseCancel == nil && ms.ttsCancel == nil && !ms.isSpeaking && !ms.isThinking && !ms.userInterrupting && !recentActivity {
 		ms.mu.Unlock()
 		return
 	}
@@ -917,8 +891,12 @@ func (ms *ManagedStream) internalInterrupt() {
 	}
 
 	ms.lastInterruptedAt = time.Now()
-	ms.drainAudioChunks()
+	// Emit the Interrupted event as soon as possible so the client/server
+	// can clear its playback buffer.
 	ms.emit(Interrupted, nil)
+	// Then drain any remaining audio chunks in the channel to prevent stale audio
+	// from being processed.
+	ms.drainAudioChunks()
 }
 
 func (ms *ManagedStream) drainAudioChunks() {

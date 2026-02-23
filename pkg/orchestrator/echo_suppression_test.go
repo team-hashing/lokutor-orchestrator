@@ -105,7 +105,7 @@ func TestEchoSuppressor_PostProcess(t *testing.T) {
 }
 
 func TestEchoSuppressor_IsEchoCorrelation(t *testing.T) {
-	// Sanity-check calculateCorrelation + IsEcho
+	// Sanity-check maxCorrelationSamples + IsEcho
 	es := NewEchoSuppressor()
 	played := generateSine(440, 200, 44100, 0.8)
 	es.RecordPlayedAudio(played)
@@ -113,9 +113,13 @@ func TestEchoSuppressor_IsEchoCorrelation(t *testing.T) {
 
 	// identical frame (use tail to match refCompare behavior) should be detected as echo
 	frame := played[len(played)-1764:]
-	corr := es.calculateCorrelation(frame, es.playedAudioBuf.Bytes())
-	if corr <= es.echoThreshold {
-		t.Fatalf("expected high correlation for identical frame; corr=%v threshold=%v", corr, es.echoThreshold)
+
+	ref := es.getRecentSamples(0)
+	threshold := 0.80 // use default or read from es if accessible safely
+
+	corr := es.maxCorrelationSamples(bytesToSamples(frame), ref)
+	if corr <= threshold {
+		t.Fatalf("expected high correlation for identical frame; corr=%v threshold=%v", corr, threshold)
 	}
 	if !es.IsEcho(frame) {
 		t.Fatalf("IsEcho returned false despite corr=%v", corr)
@@ -124,8 +128,8 @@ func TestEchoSuppressor_IsEchoCorrelation(t *testing.T) {
 	// different frequency should NOT be detected
 	different := generateSine(880, 200, 44100, 0.8)
 	frame2 := different[:1764]
-	corr2 := es.calculateCorrelation(frame2, es.playedAudioBuf.Bytes())
-	if corr2 > es.echoThreshold {
+	corr2 := es.maxCorrelationSamples(bytesToSamples(frame2), ref)
+	if corr2 > threshold {
 		t.Fatalf("unexpectedly high correlation for different signal; corr=%v", corr2)
 	}
 	if es.IsEcho(frame2) {

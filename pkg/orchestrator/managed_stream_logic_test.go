@@ -18,9 +18,7 @@ func TestManagedStream_InterruptionLogic(t *testing.T) {
 	ms.isThinking = true
 	ms.mu.Unlock()
 
-	ms.mu.Lock()
 	ms.internalInterrupt()
-	ms.mu.Unlock()
 
 	if ms.isThinking {
 		t.Error("isThinking should be false after interruption")
@@ -29,13 +27,17 @@ func TestManagedStream_InterruptionLogic(t *testing.T) {
 		t.Error("isSpeaking should be false after interruption")
 	}
 
+	// Use a timeout to avoid hanging if the event isn't sent
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
 	select {
 	case ev := <-ms.events:
 		if ev.Type != Interrupted {
 			t.Errorf("expected Interrupted event, got %v", ev.Type)
 		}
-	default:
-		t.Error("expected Interrupted event in channel")
+	case <-ctx.Done():
+		t.Error("timed out waiting for Interrupted event")
 	}
 }
 
@@ -283,7 +285,7 @@ func TestManagedStream_DropsEchoBeforeSTT(t *testing.T) {
 	ms.sttChan = ch
 	ms.mu.Unlock()
 
-	// write a chunk that is playback-echo — should be dropped and NOT sent to sttChan
+	// write a chunk that is playback-echo — should be FORWARDED to sttChan (cleaned)
 	err := ms.Write(played)
 	if err != nil {
 		t.Fatal(err)
@@ -291,17 +293,17 @@ func TestManagedStream_DropsEchoBeforeSTT(t *testing.T) {
 
 	select {
 	case <-ch:
-		t.Fatal("expected no data forwarded to STT for echo chunk")
-	default:
-		// OK
+		// OK — audio is now forwarded to STT even if it's echo,
+		// allowing the STT engine to make the final call.
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("expected audio to be forwarded to STT")
 	}
 
-	// lastUserAudio should not include the echo
+	// lastUserAudio should contain the data
 	ms.mu.Lock()
-	if len(ms.lastUserAudio) != 0 {
-		ts := len(ms.lastUserAudio)
+	if len(ms.lastUserAudio) == 0 {
 		ms.mu.Unlock()
-		t.Fatalf("expected lastUserAudio to be empty, got %d bytes", ts)
+		t.Fatal("expected lastUserAudio to contain the forwarded data")
 	}
 	ms.mu.Unlock()
 }
