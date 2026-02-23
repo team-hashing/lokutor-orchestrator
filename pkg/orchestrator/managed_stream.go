@@ -52,6 +52,11 @@ type ManagedStream struct {
 	closeOnce          sync.Once
 }
 
+// NewManagedStream creates a stream that handles the audio & event pipeline
+// for a conversation.  The internal echo suppressor is created with the
+// default 44.1 kHz rate; callers who need custom rates can adjust it after
+// construction (see SetEchoSampleRates) or create their own suppressor and
+// assign it to `ms.echoSuppressor`.
 func NewManagedStream(ctx context.Context, o *Orchestrator, session *ConversationSession) *ManagedStream {
 	mCtx, mCancel := context.WithCancel(ctx)
 
@@ -95,6 +100,15 @@ func (ms *ManagedStream) IsUserSpeaking() bool {
 		return rmsVAD.IsSpeaking()
 	}
 	return false
+}
+
+// SetEchoSampleRates allows callers to configure the playback/input rates used
+// by the stream's echo suppressor.  It is safe to call at any time; the
+// suppressor will resize buffers and update frame sizing as needed.
+func (ms *ManagedStream) SetEchoSampleRates(playbackRate, inputRate int) {
+	if ms.echoSuppressor != nil {
+		ms.echoSuppressor.SetSampleRates(playbackRate, inputRate)
+	}
 }
 
 // Interrupt immediately stops the bot from speaking. This is an explicit way to

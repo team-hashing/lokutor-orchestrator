@@ -256,6 +256,14 @@ func TestManagedStream_ExportLastUserAudio(t *testing.T) {
 	}
 }
 
+func TestManagedStream_SetEchoSampleRates(t *testing.T) {
+	ms := &ManagedStream{echoSuppressor: NewEchoSuppressor()}
+	ms.SetEchoSampleRates(48000, 16000)
+	if ms.echoSuppressor.playbackSampleRate != 48000 || ms.echoSuppressor.inputSampleRate != 16000 {
+		t.Fatalf("rates not propagated to suppressor: %d/%d", ms.echoSuppressor.playbackSampleRate, ms.echoSuppressor.inputSampleRate)
+	}
+}
+
 func TestManagedStream_DropsEchoBeforeSTT(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
