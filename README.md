@@ -1,6 +1,6 @@
-# 🎙️ Lokutor Orchestrator
+# Lokutor Orchestrator
 
-**The high-performance voice orchestration engine for building human-like AI agents.**
+**High-performance voice orchestration engine for building AI-driven voice agents.**
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/lokutor-ai/lokutor-orchestrator.svg)](https://pkg.go.dev/github.com/lokutor-ai/lokutor-orchestrator)
 [![Go Report Card](https://goreportcard.com/badge/github.com/lokutor-ai/lokutor-orchestrator)](https://goreportcard.com/report/github.com/lokutor-ai/lokutor-orchestrator)
@@ -10,18 +10,18 @@ Lokutor Orchestrator is a production-grade Go library for building voice-powered
 
 ---
 
-## ✨ Features
+## Features
 
-- ✅ **Full-Duplex Voice Orchestration (v1.3)** - Real-time capture and playback with native 44.1kHz 16-bit PCM.
-- ✅ **Barge-in Support** - Instantly interrupts the bot when the user starts speaking, even during the final trail of a response.
-- ✅ **Predictive Audio Buffering** - Ensures the beginning of user speech is never cut off (captures lead-in silence).
-- ✅ **High-Performance Echo Suppression** - Multi-threaded correlation filters prevent the bot from interrupting itself.
-- ✅ **Pluggable Architecture** - Swap STT, LLM, and TTS implementations with a single line of code.
-- ✅ **Instrumentation** - Built-in stage-by-stage latency tracking (STT, LLM, TTS, E2E).
+- Full-duplex voice orchestration (v1.3): real-time capture and playback with native 44.1kHz 16-bit PCM.
+- Barge-in support: interrupts the agent promptly when the user begins speaking.
+- Predictive audio buffering: prevents clipping of the start of user speech.
+- High-performance echo suppression: correlation filters reduce self-interruption.
+- Pluggable architecture: swap STT, LLM, and TTS implementations with minimal changes.
+- Instrumentation: stage-by-stage latency tracking (STT, LLM, TTS, end-to-end).
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Installation
 
@@ -78,7 +78,7 @@ func main() {
 
 ---
 
-## 🛠️ Provider Ecosystem
+## Provider Ecosystem
 
 Lokutor supports all major infrastructure providers out of the box:
 
@@ -88,7 +88,7 @@ Lokutor supports all major infrastructure providers out of the box:
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ┌─────────────┐
@@ -121,18 +121,18 @@ Lokutor supports all major infrastructure providers out of the box:
 
 ---
 
-## 🌟 Building "Top-Tier" Human Agents
+## Strategies for High-Quality Interactions
 
-To reach world-class human-like interactions, we recommend these strategies:
+Recommendations to improve conversational quality:
 
-1.  **Thinking Fillers**: Trigger short fillers ("Mh-hm...", "Let me see...") when LLM latency exceeds 400ms.
-2.  **Prosody Hooks**: Use LLM system prompts to request emotional markers for dynamic TTS adjustments.
-3.  **Backchanneling**: Enable small verbal confirmations during long user turns without ending the assistant's turn.
-4.  **Social Repair**: Add logic to acknowledge interruptions ("Oh, sorry, go ahead!") for a natural flow.
+1. Use short filler utterances when model latency exceeds a threshold to maintain user engagement.
+2. Include prosody markers in system prompts to enable dynamic TTS adjustments.
+3. Use brief backchannel confirmations during extended user turns to indicate attention.
+4. Acknowledge interruptions gracefully to preserve conversational continuity.
 
 ---
 
-## 🏗️ Technical Details
+## Technical Details
 
 ### Echo Suppression
 The orchestrator tracks every sample sent to the speaker and uses sliding-window correlation search on mic input. This prevents "self-interruption" by identifying when the mic hears the agent's own voice.
@@ -145,6 +145,6 @@ Every turn includes detailed instrumentation available via `stream.GetLatencyBre
 
 ---
 
-## 📄 License
+## License
 
 MIT. Built with ❤️ by the Lokutor AI team.
