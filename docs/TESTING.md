@@ -2,12 +2,12 @@
 
 A production-ready, standalone Go library for building voice-powered applications with pluggable STT, LLM, and TTS providers.
 
-## Test Status: ✅ All Tests Passing
+## Test Status: All tests passing
 
 ```
-✅ 16 tests passed
-✅ 0 failures
-✅ ~0.17s execution time
+16 tests passed
+0 failures
+~0.17s execution time
 ```
 
 ## Test Overview
@@ -85,14 +85,14 @@ make lint       # Run go vet
 
 ## Key Features Validated
 
-✅ **Provider Abstraction** - Pluggable STT, LLM, TTS implementations  
-✅ **Full Pipeline** - Audio → Transcript → Response → Synthesis  
-✅ **Session Management** - Conversation history with automatic windowing  
-✅ **Streaming Support** - Real-time audio chunk streaming  
-✅ **Thread Safety** - Concurrent operations with sync.RWMutex  
-✅ **Error Handling** - Custom error types for precise error discrimination  
-✅ **Structured Logging** - Pluggable Logger interface for observability  
-✅ **Configuration** - Dynamic updates with thread-safe access  
+- Provider abstraction: pluggable STT, LLM, and TTS implementations
+- Full pipeline: audio → transcript → response → synthesis
+- Session management: conversation history with automatic windowing
+- Streaming support: real-time audio chunk streaming
+- Thread safety: concurrent operations using sync.RWMutex
+- Error handling: custom error types for precise error discrimination
+- Structured logging: pluggable `Logger` interface for observability
+- Configuration: dynamic updates with thread-safe access
 
 ## Mock Providers
 
@@ -157,4 +157,4 @@ transcript, response, err := orch.ProcessAudio(ctx, session, audioBytes)
 ---
 
 **Last Updated**: February 3, 2026  
-**Status**: ✅ All Tests Passing (v1.2.0)
+**Status**: All tests passing (v1.2.0)
