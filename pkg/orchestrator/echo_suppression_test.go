@@ -11,7 +11,6 @@ import (
 	"github.com/lokutor-ai/lokutor-orchestrator/pkg/audio"
 )
 
-// helper: generate a sine wave (16-bit LE PCM)
 func generateSine(freq float64, durationMs int, sampleRate int, amp float64) []byte {
 	n := sampleRate * durationMs / 1000
 	buf := make([]byte, n*2)
@@ -25,7 +24,6 @@ func generateSine(freq float64, durationMs int, sampleRate int, amp float64) []b
 	return buf
 }
 
-// energy of a PCM slice (sum of squared samples)
 func pcmEnergy(b []byte) float64 {
 	if len(b) < 2 {
 		return 0
@@ -39,7 +37,6 @@ func pcmEnergy(b []byte) float64 {
 	return sum
 }
 
-// helper to convert float64 samples back to 16-bit bytes (little-endian)
 func samplesToBytes(samples []float64) []byte {
 	buf := make([]byte, len(samples)*2)
 	for i, v := range samples {
@@ -50,27 +47,20 @@ func samplesToBytes(samples []float64) []byte {
 	return buf
 }
 
-// run a PostProcess scenario with the provided rates, generating a simple
-// played tone and a different user tone. Returns the processed output for
-// further inspection.
 func runPostProcessScenario(t *testing.T, playRate, inputRate int) {
-	// create sine waves at the respective sample rates
 	played := generateSine(440, 500, playRate, 0.8)
 	user := generateSine(1200, 300, inputRate, 0.8)
 
-	// build mic input: 100ms silence + attenuated played (resampled if needed) + user + replayed echo
 	var echoAtt []byte
 	if playRate == inputRate {
 		echoAtt = make([]byte, len(played))
 		for i := 0; i < len(played); i += 2 {
-			// attenuate by 0.25
 			s := int16(played[i]) | (int16(played[i+1]) << 8)
 			s = int16(float64(s) * 0.25)
 			echoAtt[i] = byte(s)
 			echoAtt[i+1] = byte(s >> 8)
 		}
 	} else {
-		// resample played audio to input rate before attenuating
 		ps := bytesToSamples(played)
 		rs := resample(ps, playRate, inputRate)
 		echoAtt = samplesToBytes(rs)
@@ -88,14 +78,12 @@ func runPostProcessScenario(t *testing.T, playRate, inputRate int) {
 	mic = append(mic, user...)
 	mic = append(mic, echoAtt...)
 
-	// configure suppressor
 	es := NewEchoSuppressorWithRates(playRate, inputRate)
 	es.RecordPlayedAudio(played)
 	es.lastTTSTime = time.Now()
 
 	out := es.PostProcess(mic)
 
-	// evaluate energies
 	offEcho1 := len(silence)
 	offUser := offEcho1 + len(echoAtt)
 	offEcho2 := offUser + len(user)
@@ -117,7 +105,6 @@ func runPostProcessScenario(t *testing.T, playRate, inputRate int) {
 		t.Fatalf("user audio altered unexpectedly at rates play=%d input=%d: before=%v after=%v", playRate, inputRate, eUserBefore, eUserAfter)
 	}
 
-	// optionally drop files for manual inspection (quiet unless verbose)
 	if testing.Verbose() {
 		tmp := os.TempDir()
 		inPath := filepath.Join(tmp, fmt.Sprintf("echo_test_input_%d_%d.wav", playRate, inputRate))
@@ -149,7 +136,6 @@ func TestEchoSuppressor_IsEchoCorrelation(t *testing.T) {
 
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
-			// sanity-check maxCorrelationSamples + IsEcho with configured rates
 			es := NewEchoSuppressorWithRates(sc.playRate, sc.inputRate)
 			played := generateSine(440, 200, sc.playRate, 0.8)
 			es.RecordPlayedAudio(played)
@@ -157,7 +143,6 @@ func TestEchoSuppressor_IsEchoCorrelation(t *testing.T) {
 
 			frame := played[len(played)-1764:]
 			if sc.playRate != sc.inputRate {
-				// resample to input rate before passing to IsEcho()
 				samp := bytesToSamples(frame)
 				frame = samplesToBytes(resample(samp, sc.playRate, sc.inputRate))
 			}
@@ -165,8 +150,6 @@ func TestEchoSuppressor_IsEchoCorrelation(t *testing.T) {
 			ref := es.getRecentSamples(0)
 			threshold := 0.80
 
-			// compute correlation against reference; resample input back up if
-			// necessary so that the two arrays are comparable.
 			inp := bytesToSamples(frame)
 			if sc.playRate != sc.inputRate {
 				inp = resample(inp, sc.inputRate, sc.playRate)

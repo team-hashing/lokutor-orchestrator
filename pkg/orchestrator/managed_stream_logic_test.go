@@ -27,7 +27,6 @@ func TestManagedStream_InterruptionLogic(t *testing.T) {
 		t.Error("isSpeaking should be false after interruption")
 	}
 
-	// Use a timeout to avoid hanging if the event isn't sent
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -158,12 +157,12 @@ func TestManagedStream_LatencyBreakdown(t *testing.T) {
 	ms.mu.Lock()
 	ms.userSpeechEndTime = base
 	ms.sttStartTime = base.Add(10 * time.Millisecond)
-	ms.sttEndTime = base.Add(110 * time.Millisecond) // STT = 100ms
+	ms.sttEndTime = base.Add(110 * time.Millisecond) 
 	ms.llmStartTime = base.Add(130 * time.Millisecond)
-	ms.llmEndTime = base.Add(380 * time.Millisecond) // LLM = 250ms
+	ms.llmEndTime = base.Add(380 * time.Millisecond) 
 	ms.ttsStartTime = base.Add(400 * time.Millisecond)
-	ms.ttsFirstChunkTime = base.Add(520 * time.Millisecond) // first TTS = 120ms after ttsStart
-	ms.ttsEndTime = base.Add(900 * time.Millisecond)        // TTS total = 500ms
+	ms.ttsFirstChunkTime = base.Add(520 * time.Millisecond) 
+	ms.ttsEndTime = base.Add(900 * time.Millisecond)        
 	ms.botSpeakStartTime = base.Add(395 * time.Millisecond)
 	ms.lastAudioSentAt = base.Add(525 * time.Millisecond)
 	ms.mu.Unlock()
@@ -209,7 +208,6 @@ func TestManagedStream_ExportLastUserAudio(t *testing.T) {
 		ctx:     ctx,
 	}
 
-	// prepare played tone and mic (attenuated echo + user)
 	played := make([]byte, 44100/10*2)
 	for i := 0; i < len(played)-1; i += 2 {
 		val := int16(10000)
@@ -277,8 +275,7 @@ func TestManagedStream_DropsEchoBeforeSTT(t *testing.T) {
 	}
 	ms.vad = NewRMSVAD(0.02, 50*time.Millisecond)
 
-	// Simulate playback then mic echo
-	played := make([]byte, 4410*2) // 100ms
+	played := make([]byte, 4410*2) 
 	for i := 0; i < len(played)-1; i += 2 {
 		val := int16(8000)
 		played[i] = byte(val)
@@ -287,13 +284,11 @@ func TestManagedStream_DropsEchoBeforeSTT(t *testing.T) {
 
 	ms.RecordPlayedOutput(played)
 
-	// create a buffered sttChan to observe forwarded audio
 	ch := make(chan []byte, 4)
 	ms.mu.Lock()
 	ms.sttChan = ch
 	ms.mu.Unlock()
 
-	// write a chunk that is playback-echo — should be FORWARDED to sttChan (cleaned)
 	err := ms.Write(played)
 	if err != nil {
 		t.Fatal(err)
@@ -301,13 +296,10 @@ func TestManagedStream_DropsEchoBeforeSTT(t *testing.T) {
 
 	select {
 	case <-ch:
-		// OK — audio is now forwarded to STT even if it's echo,
-		// allowing the STT engine to make the final call.
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("expected audio to be forwarded to STT")
 	}
 
-	// lastUserAudio should contain the data
 	ms.mu.Lock()
 	if len(ms.lastUserAudio) == 0 {
 		ms.mu.Unlock()

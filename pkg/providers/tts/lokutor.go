@@ -124,13 +124,10 @@ func (t *LokutorTTS) Close() error {
 	return nil
 }
 
-// Abort forces any in-progress synthesis to stop immediately by closing the
-// underlying websocket connection. This lets callers cancel synthesis quickly.
 func (t *LokutorTTS) Abort() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.conn != nil {
-		// close with abnormal closure so any blocked reads/writes unblock
 		err := t.conn.Close(websocket.StatusAbnormalClosure, "abort")
 		t.conn = nil
 		return err

@@ -60,7 +60,7 @@ func TestManagedStream_EchoSuppression(t *testing.T) {
 	loudChunk := make([]byte, 100)
 	for i := 0; i < 100; i += 2 {
 
-		val := int16(655) // Stay below 0.04 threshold (32768 * 0.02)
+		val := int16(655) 
 		loudChunk[i] = byte(val & 0xFF)
 		loudChunk[i+1] = byte(val >> 8)
 	}
@@ -78,13 +78,11 @@ func TestManagedStream_EchoSuppression(t *testing.T) {
 
 	}
 
-	// PART 2: outside danger zone — should trigger normally even at moderate volume
 	stream.mu.Lock()
 	stream.lastAudioSentAt = time.Now().Add(-5 * time.Second)
 	stream.lastAudioEmittedAt = stream.lastAudioSentAt
 	stream.mu.Unlock()
 
-	// Use a louder sound (0.25) to ensure it triggers the base threshold
 	normalChunk := make([]byte, 100)
 	for i := 0; i < 100; i += 2 {
 		val := int16(8192)
@@ -106,9 +104,7 @@ func TestManagedStream_EchoSuppression(t *testing.T) {
 	}
 }
 
-// --- New tests for MinWords interruption and TTS abort behaviour ---
 
-// mock streaming STT that emits configured transcripts (partial/final)
 type MockStreamingSTT struct {
 	steps []struct {
 		text    string
@@ -157,29 +153,23 @@ func TestManagedStream_MinWordsInterruption(t *testing.T) {
 	stream := orch.NewManagedStream(context.Background(), session)
 	defer stream.Close()
 
-	// simulate assistant speaking
 	stream.mu.Lock()
 	stream.isSpeaking = true
 	stream.mu.Unlock()
 
-	// start streaming STT; transcripts will be evaluated against min-words
 	stream.startStreamingSTT(stt)
 
-	// ensure no Interrupted event after the 1-word partial
 	select {
 	case ev := <-stream.Events():
 		if ev.Type == Interrupted {
 			t.Fatalf("interrupted too early on partial")
 		}
-		// Drain the partial transcript event if it arrives
 		if ev.Type != TranscriptPartial {
 			t.Errorf("expected TranscriptPartial or nothing, got %v", ev.Type)
 		}
 	case <-time.After(200 * time.Millisecond):
-		// ok — no interruption yet
 	}
 
-	// now wait for the final transcript (3 words) which should trigger interrupt
 	select {
 	case ev := <-stream.Events():
 		if ev.Type != Interrupted {
@@ -190,7 +180,6 @@ func TestManagedStream_MinWordsInterruption(t *testing.T) {
 	}
 }
 
-// Mock TTS that streams indefinitely until Abort is called
 type MockLongRunningTTS struct {
 	abortCalled bool
 	abortCh     chan struct{}
@@ -219,7 +208,6 @@ func (m *MockLongRunningTTS) Abort() error {
 	m.abortCalled = true
 	select {
 	case <-m.abortCh:
-		// already closed
 	default:
 		close(m.abortCh)
 	}
@@ -239,10 +227,8 @@ func TestManagedStream_TTSAbortOnInterruption(t *testing.T) {
 	stream := orch.NewManagedStream(context.Background(), session)
 	defer stream.Close()
 
-	// start LLM+TTS in background
 	go stream.runLLMAndTTS(context.Background(), "hello")
 
-	// wait for BotSpeaking (arrives after BotThinking) to ensure TTS started
 	deadline := time.After(500 * time.Millisecond)
 	for {
 		select {
@@ -256,10 +242,8 @@ func TestManagedStream_TTSAbortOnInterruption(t *testing.T) {
 	}
 started:
 
-	// directly trigger an interruption (avoids VAD/emission races in unit test)
 	stream.interrupt()
 
-	// expect Abort to be called on TTS provider and Interrupt event to be emitted
 	select {
 	case ev := <-stream.Events():
 		if ev.Type != Interrupted {
@@ -285,13 +269,11 @@ func TestManagedStream_InterruptDuringPendingResponse(t *testing.T) {
 	stream := orch.NewManagedStream(context.Background(), session)
 	defer stream.Close()
 
-	// simulate a pending response by setting responseCancel
 	called := false
 	stream.mu.Lock()
 	stream.responseCancel = func() { called = true }
 	stream.mu.Unlock()
 
-	// write loud audio to trigger VADSpeechStart which should call internalInterrupt
 	loudChunk := make([]byte, 100)
 	for i := 0; i < 100; i += 2 {
 		loudChunk[i] = 0xFF
@@ -301,7 +283,6 @@ func TestManagedStream_InterruptDuringPendingResponse(t *testing.T) {
 		stream.Write(loudChunk)
 	}
 
-	// wait for Interrupted event (UserSpeaking may arrive first)
 	timeout := time.After(500 * time.Millisecond)
 	for {
 		select {
@@ -331,13 +312,11 @@ func TestManagedStream_NoSelfInterruptDuringTTS(t *testing.T) {
 	stream := orch.NewManagedStream(context.Background(), session)
 	defer stream.Close()
 
-	// Simulate assistant currently speaking and recent audio played
 	stream.mu.Lock()
 	stream.isSpeaking = true
 	stream.lastAudioSentAt = time.Now()
 	stream.mu.Unlock()
 
-	// write attenuated audio (simulating room echo below 0.26 threshold)
 	loudChunk := make([]byte, 100)
 	for i := 0; i < 100; i += 2 {
 		val := int16(819)
@@ -348,14 +327,12 @@ func TestManagedStream_NoSelfInterruptDuringTTS(t *testing.T) {
 		stream.Write(loudChunk)
 	}
 
-	// ensure we do NOT get Interrupted (self-interrupt) within a short window
 	select {
 	case ev := <-stream.Events():
 		if ev.Type == Interrupted {
 			t.Fatal("self-interrupt detected during TTS")
 		}
 	case <-time.After(150 * time.Millisecond):
-		// OK — no interrupt
 	}
 }
 
@@ -378,12 +355,10 @@ func TestManagedStream_TranscriptInterruptWhileSpeaking(t *testing.T) {
 	stream := orch.NewManagedStream(context.Background(), session)
 	defer stream.Close()
 
-	// assistant is speaking — VADSpeechStart must NOT auto-interrupt
 	stream.mu.Lock()
 	stream.isSpeaking = true
 	stream.mu.Unlock()
 
-	// start streaming STT; the partial "hola" should cause interrupt
 	stream.startStreamingSTT(stt)
 
 	select {

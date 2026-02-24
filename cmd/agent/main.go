@@ -123,10 +123,7 @@ func main() {
 
 	tts := ttsProvider.NewLokutorTTS(lokutorKey)
 
-	// Create VAD with settings balanced for speed and noise immunity
-	// Threshold (0.025) provides better rejection of background noise
 	vad := orchestrator.NewRMSVAD(0.025, 800*time.Millisecond)
-	// Requires 4 consecutive frames (~92ms) to confirm speech start
 	vad.SetMinConfirmed(4)
 	config := orchestrator.DefaultConfig()
 	config.Language = lang
@@ -157,16 +154,14 @@ func main() {
 	var playbackBytes []byte
 	var e2eLogged bool
 	var preRolling bool = true
-	const preRollSize = 44100 * 2 * 200 / 1000 // 200ms of audio (44.1kHz, 16-bit, mono)
+	const preRollSize = 44100 * 2 * 200 / 1000 
 
-	// Buffer pool to avoid allocations in the real-time thread
 	chunkPool := sync.Pool{
 		New: func() interface{} {
-			return make([]byte, 8192) // Large enough for any frame
+			return make([]byte, 8192) 
 		},
 	}
 
-	// Mic capture decoupled from the audio callback thread
 	inputChan := make(chan []byte, 1024)
 	go func() {
 		for chunk := range inputChan {
@@ -175,7 +170,6 @@ func main() {
 		}
 	}()
 
-	// Decouple played output recording
 	playedChan := make(chan []byte, 1024)
 	go func() {
 		for chunk := range playedChan {
@@ -185,7 +179,6 @@ func main() {
 	}()
 
 	onSamples := func(pOutput, pInput []byte, frameCount uint32) {
-		// CAPTURE: Copy input and send to channel asynchronously
 		if pInput != nil {
 			buf := chunkPool.Get().([]byte)
 			n := copy(buf, pInput)
@@ -196,12 +189,10 @@ func main() {
 			}
 		}
 
-		// PLAYBACK: Minimize lock hold time to prevent audio artifacts
 		if pOutput != nil {
 			playbackMu.Lock()
 			audioLen := len(playbackBytes)
 
-			// Handle pre-roll to avoid gaps due to jitter
 			if preRolling {
 				if audioLen < preRollSize {
 					playbackMu.Unlock()
@@ -213,7 +204,6 @@ func main() {
 				preRolling = false
 			}
 
-			// Only wait for buffer if we have absolutely nothing queued
 			if audioLen == 0 {
 				playbackMu.Unlock()
 				for i := range pOutput {
@@ -222,21 +212,17 @@ func main() {
 				return
 			}
 
-			// Determine how much to copy
 			bytesToCopy := len(pOutput)
 			if audioLen < bytesToCopy {
 				bytesToCopy = audioLen
 			}
-			bytesToCopy -= bytesToCopy % 2 // Keep samples aligned
+			bytesToCopy -= bytesToCopy % 2 
 
-			// Copy data
 			n := copy(pOutput[:bytesToCopy], playbackBytes[:bytesToCopy])
 			playbackBytes = playbackBytes[n:]
 			playbackMu.Unlock()
 
-			// Notify after lock is released
 			if n > 0 {
-				// record exact samples being played
 				buf := chunkPool.Get().([]byte)
 				nc := copy(buf, pOutput[:n])
 				select {
@@ -246,7 +232,6 @@ func main() {
 				}
 
 				stream.NotifyAudioPlayed()
-				// Log end-to-end (user -> actual audio playback) once per turn
 				if !e2eLogged {
 					bd := stream.GetLatencyBreakdown()
 					if bd.UserToPlay > 0 || bd.UserToTTSFirstByte > 0 || bd.UserToLLM > 0 || bd.UserToSTT > 0 {
@@ -257,7 +242,6 @@ func main() {
 				}
 			}
 
-			// Pad remaining output with silence
 			if n < len(pOutput) {
 				for i := n; i < len(pOutput); i++ {
 					pOutput[i] = 0
@@ -286,12 +270,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Event loop: handle orchestrator events and update playback buffer / device
 	go func() {
 		for event := range stream.Events() {
 			switch event.Type {
 			case orchestrator.UserSpeaking, orchestrator.Interrupted:
-				// Stop local playback instantly
 				playbackMu.Lock()
 				playbackBytes = nil
 				preRolling = true
@@ -306,7 +288,6 @@ func main() {
 				fmt.Printf("\r\033[K⌛ [STT] Processing...\n")
 			case orchestrator.TranscriptFinal:
 				fmt.Printf("\r\033[K📝 [TRANSCRIPT] %s\n", event.Data.(string))
-				// export last captured user audio (raw + post-processed) for debugging
 				raw, proc := stream.ExportLastUserAudio()
 				if raw != nil {
 					ts := time.Now().Format("20060102-150405")
@@ -320,7 +301,6 @@ func main() {
 			case orchestrator.BotThinking:
 				fmt.Printf("\r\033[K🧠 [LLM] Thinking...\n")
 			case orchestrator.BotResponse:
-				// print the assistant's textual response when available
 				if resp, ok := event.Data.(string); ok {
 					fmt.Printf("\r\033[K💬 [AGENT] %s\n", resp)
 				}
@@ -343,24 +323,19 @@ func main() {
 		}
 	}()
 
-	// Wait for SIGINT / SIGTERM and perform best-effort cleanup so the
-	// audio thread and streams are unblocked before exit.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	sigReceived := <-sig
 	fmt.Printf("\nShutting down (signal=%v)...\n", sigReceived)
 
-	// stop audio device to ensure audio callback returns promptly
 	fmt.Println("debug: calling device.Stop()")
 	_ = device.Stop()
 	fmt.Println("debug: device.Stop() returned")
 
-	// explicitly close stream to cancel pipelines
 	fmt.Println("debug: calling stream.Close()")
 	stream.Close()
 	fmt.Println("debug: stream.Close() returned")
 
-	// give a small grace period for cleanup
 	time.Sleep(50 * time.Millisecond)
 	fmt.Println("debug: exiting main")
 }

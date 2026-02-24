@@ -6,37 +6,22 @@ import (
 	"time"
 )
 
-// EchoSuppressor detects and filters out speaker echo from microphone input.
-// It uses correlation-based analysis to detect when input audio matches recently
-// played audio.  Both the playback sample rate (audio sent to speakers) and the
-// input sample rate (microphone stream) can be configured; the echo suppressor
-// will internally resample the smaller-rate stream to match the larger when
-// performing correlation checks.  This makes it possible for example to record
-// the output at 44 kHz while the mic runs at 16 kHz.
 type EchoSuppressor struct {
 	mu            sync.Mutex
-	playedSamples []float64 // Ring buffer of played samples
-	writeIdx      int       // Current write position in ring buffer
-	count         int       // Number of samples currently in buffer
-	maxSamples    int       // Max number of samples to store
-	echoThreshold float64   // Correlation threshold above which we consider audio to be echo
-	echoSilenceMS int       // How long to suppress echoes after TTS stops (ms)
-	lastTTSTime   time.Time // When we last played audio
+	playedSamples []float64 
+	writeIdx      int       
+	count         int       
+	maxSamples    int       
+	echoThreshold float64   
+	echoSilenceMS int       
+	lastTTSTime   time.Time 
 	enabled       bool
-	// For real-time detection we also keep a short recent-playback duration to
-	// tolerate playback-to-mic latency (ms).
 	recentPlaybackWindowMS int
 
-	// sample rate configuration (in Hz). playbackSampleRate is the rate
-	// of the audio sent to the speakers; inputSampleRate is the rate of the
-	// microphone stream. They may differ, in which case the input will be
-	// resampled internally before correlation checks.
 	playbackSampleRate int
 	inputSampleRate    int
 }
 
-// getRecentSamplesInternal returns a linear slice of the most recent samples.
-// caller MUST hold es.mu
 func (es *EchoSuppressor) getRecentSamplesInternal(limit int) []float64 {
 	if es.count == 0 {
 		return nil
@@ -54,14 +39,12 @@ func (es *EchoSuppressor) getRecentSamplesInternal(limit int) []float64 {
 	return out
 }
 
-// getRecentSamples returns a linear slice of the most recent samples.
 func (es *EchoSuppressor) getRecentSamples(limit int) []float64 {
 	es.mu.Lock()
 	defer es.mu.Unlock()
 	return es.getRecentSamplesInternal(limit)
 }
 
-// maxCorrelationSamples performs a sliding-window search.
 func (es *EchoSuppressor) maxCorrelationSamples(inputSamples, refSamples []float64) float64 {
 	if len(inputSamples) == 0 || len(refSamples) == 0 {
 		return 0
@@ -110,16 +93,10 @@ func (es *EchoSuppressor) maxCorrelationSamples(inputSamples, refSamples []float
 	return maxCorr
 }
 
-// NewEchoSuppressor creates a new echo suppressor at the common 44.1kHz rate.
-// It is retained for backwards compatibility. For custom rates use
-// NewEchoSuppressorWithRates.
 func NewEchoSuppressor() *EchoSuppressor {
 	return NewEchoSuppressorWithRates(44100, 44100)
 }
 
-// NewEchoSuppressorWithRates creates an echo suppressor configured for the
-// provided playback and input sample rates. The internal reference buffer is
-// sized for roughly two seconds of playback audio.
 func NewEchoSuppressorWithRates(playbackRate, inputRate int) *EchoSuppressor {
 	if playbackRate <= 0 {
 		playbackRate = 44100
@@ -127,13 +104,12 @@ func NewEchoSuppressorWithRates(playbackRate, inputRate int) *EchoSuppressor {
 	if inputRate <= 0 {
 		inputRate = playbackRate
 	}
-	// ~2 seconds worth of samples at playback rate
 	maxSamples := playbackRate * 2
 	return &EchoSuppressor{
 		playedSamples:          make([]float64, maxSamples),
 		maxSamples:             maxSamples,
-		echoThreshold:          0.80, // more conservative for sliding window search
-		echoSilenceMS:          2000, // cover longer playback→mic delays
+		echoThreshold:          0.80, 
+		echoSilenceMS:          2000, 
 		recentPlaybackWindowMS: 2000,
 		enabled:                true,
 		playbackSampleRate:     playbackRate,
@@ -141,7 +117,6 @@ func NewEchoSuppressorWithRates(playbackRate, inputRate int) *EchoSuppressor {
 	}
 }
 
-// RecordPlayedAudio records audio that was just sent to speakers
 func (es *EchoSuppressor) RecordPlayedAudio(chunk []byte) {
 	if !es.enabled || len(chunk) == 0 {
 		return
@@ -165,20 +140,15 @@ func (es *EchoSuppressor) RecordPlayedAudio(chunk []byte) {
 	es.lastTTSTime = time.Now()
 }
 
-// getSampleAt returns the sample at index i (relative to start of history)
-// caller must hold es.mu
 func (es *EchoSuppressor) getSampleAt(i int) float64 {
 	idx := (es.writeIdx - es.count + i + es.maxSamples) % es.maxSamples
 	return es.playedSamples[idx]
 }
 
-// IsEcho checks if input audio is primarily echo from speakers
 func (es *EchoSuppressor) IsEcho(inputChunk []byte) bool {
 	return es.isEchoImpl(inputChunk, false)
 }
 
-// IsEchoFast is a faster version of IsEcho that only searches the most recent
-// part of the reference buffer (useful for real-time barge-in detection).
 func (es *EchoSuppressor) IsEchoFast(inputChunk []byte) bool {
 	return es.isEchoImpl(inputChunk, true)
 }
@@ -191,14 +161,12 @@ func (es *EchoSuppressor) isEchoImpl(inputChunk []byte, fast bool) bool {
 	es.mu.Lock()
 	defer es.mu.Unlock()
 
-	// If we haven't played audio recently, no echo possible
 	if time.Since(es.lastTTSTime) > time.Duration(es.echoSilenceMS)*time.Millisecond {
 		return false
 	}
 
 	searchSize := es.count
 	if fast {
-		// 500ms window scaled by playback sample rate
 		maxWindow := es.playbackSampleRate / 2
 		if searchSize > maxWindow {
 			searchSize = maxWindow
@@ -207,25 +175,19 @@ func (es *EchoSuppressor) isEchoImpl(inputChunk []byte, fast bool) bool {
 
 	threshold := es.echoThreshold
 	inputSamples := bytesToSamples(inputChunk)
-	// if the input and playback were recorded at different rates, resample the
-	// input to match the playback rate before performing any correlation.
 	if es.inputSampleRate != es.playbackSampleRate {
 		inputSamples = resample(inputSamples, es.inputSampleRate, es.playbackSampleRate)
 	}
 	correlation := es.maxCorrelationRing(inputSamples, searchSize)
 
-	// If correlation is high, it's echo
 	if correlation > threshold {
 		return true
 	}
 
-	// Fallback to envelope correlation for 'S' sounds
 	envCorr := es.maxEnvelopeCorrelationRing(inputSamples, searchSize, 8)
 	return envCorr > threshold+0.05
 }
 
-// maxCorrelationRing performing a sliding-window search directly on the ring buffer.
-// caller MUST hold es.mu
 func (es *EchoSuppressor) maxCorrelationRing(inputSamples []float64, searchSize int) float64 {
 	if len(inputSamples) == 0 || searchSize == 0 {
 		return 0
@@ -277,8 +239,6 @@ func (es *EchoSuppressor) maxCorrelationRing(inputSamples []float64, searchSize 
 	return maxCorr
 }
 
-// maxEnvelopeCorrelationRing direct ring-buffer version
-// caller MUST hold es.mu
 func (es *EchoSuppressor) maxEnvelopeCorrelationRing(inSamples []float64, searchSize int, decimation int) float64 {
 	if len(inSamples) == 0 || searchSize == 0 {
 		return 0
@@ -367,7 +327,6 @@ func (es *EchoSuppressor) maxEnvelopeCorrelationRing(inSamples []float64, search
 	return maxCorr
 }
 
-// bytesToSamples converts byte array (16-bit little-endian) to float64 samples in [-1, 1]
 func bytesToSamples(data []byte) []float64 {
 	samples := make([]float64, 0, len(data)/2)
 	for i := 0; i < len(data)-1; i += 2 {
@@ -378,10 +337,6 @@ func bytesToSamples(data []byte) []float64 {
 	return samples
 }
 
-// resample performs a simple linear resampling of `samples` from inRate to
-// outRate.  It is not high-quality, but sufficient for echo correlation where
-// phase alignment is more important than fidelity.  Returns nil if conversion
-// would produce zero samples.
 func resample(samples []float64, inRate, outRate int) []float64 {
 	if len(samples) == 0 || inRate == outRate || inRate <= 0 || outRate <= 0 {
 		return samples
@@ -405,7 +360,6 @@ func resample(samples []float64, inRate, outRate int) []float64 {
 	return out
 }
 
-// calculateEnergy computes the sum of squared samples
 func calculateEnergy(samples []float64) float64 {
 	energy := 0.0
 	for _, s := range samples {
@@ -414,7 +368,6 @@ func calculateEnergy(samples []float64) float64 {
 	return energy
 }
 
-// ClearEchoBuffer clears the played audio buffer
 func (es *EchoSuppressor) ClearEchoBuffer() {
 	es.mu.Lock()
 	defer es.mu.Unlock()
@@ -422,7 +375,6 @@ func (es *EchoSuppressor) ClearEchoBuffer() {
 	es.count = 0
 }
 
-// PostProcess runs offline echo removal on `input` PCM
 func (es *EchoSuppressor) PostProcess(input []byte) []byte {
 	if !es.enabled || len(input) == 0 {
 		out := make([]byte, len(input))
@@ -430,9 +382,6 @@ func (es *EchoSuppressor) PostProcess(input []byte) []byte {
 		return out
 	}
 
-	// frame-based post processing uses the input stream rate so callers feeding
-	// 16k audio still get 20ms frames, and we resample each frame before
-	// running against the playback reference if the rates differ.
 	const frameMs = 20
 
 	es.mu.Lock()
@@ -444,7 +393,7 @@ func (es *EchoSuppressor) PostProcess(input []byte) []byte {
 
 	inputRate := es.inputSampleRate
 	if inputRate <= 0 {
-		inputRate = 44100 // backward compatibility
+		inputRate = 44100 
 	}
 	frameSamples := (inputRate * frameMs) / 1000
 	for i := 0; i < len(inputSamples); i += frameSamples {
@@ -470,7 +419,6 @@ func (es *EchoSuppressor) PostProcess(input []byte) []byte {
 	return out
 }
 
-// RemoveEchoRealtime attempts to mute echo in real time
 func (es *EchoSuppressor) RemoveEchoRealtime(input []byte) []byte {
 	if !es.enabled || len(input) == 0 {
 		out := make([]byte, len(input))
@@ -514,7 +462,6 @@ func (es *EchoSuppressor) RemoveEchoRealtime(input []byte) []byte {
 	return make([]byte, len(input))
 }
 
-// SetThreshold adjusts the echo detection sensitivity
 func (es *EchoSuppressor) SetThreshold(threshold float64) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
@@ -523,10 +470,6 @@ func (es *EchoSuppressor) SetThreshold(threshold float64) {
 	}
 }
 
-// SetPlaybackSampleRate updates the rate used for the played-audio buffer. It
-// also resizes the internal ring buffer to accommodate roughly two seconds of
-// audio at the new rate.  Calling this while audio is buffered will lose the
-// old history.
 func (es *EchoSuppressor) SetPlaybackSampleRate(rate int) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
@@ -546,8 +489,6 @@ func (es *EchoSuppressor) SetPlaybackSampleRate(rate int) {
 	}
 }
 
-// SetInputSampleRate sets the sample rate expected for incoming audio. This
-// rate is used for frame sizing and optional resampling to the playback rate.
 func (es *EchoSuppressor) SetInputSampleRate(rate int) {
 	es.mu.Lock()
 	defer es.mu.Unlock()
@@ -557,15 +498,11 @@ func (es *EchoSuppressor) SetInputSampleRate(rate int) {
 	es.inputSampleRate = rate
 }
 
-// SetSampleRates is a convenience wrapper that adjusts both playback and input
-// rates together. It is equivalent to calling SetPlaybackSampleRate and
-// SetInputSampleRate sequentially.
 func (es *EchoSuppressor) SetSampleRates(playbackRate, inputRate int) {
 	es.SetPlaybackSampleRate(playbackRate)
 	es.SetInputSampleRate(inputRate)
 }
 
-// SetEnabled enables or disables echo suppression
 func (es *EchoSuppressor) SetEnabled(enabled bool) {
 	es.mu.Lock()
 	defer es.mu.Unlock()

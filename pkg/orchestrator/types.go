@@ -40,9 +40,6 @@ type LLMProvider interface {
 type TTSProvider interface {
 	Synthesize(ctx context.Context, text string, voice Voice, lang Language) ([]byte, error)
 	StreamSynthesize(ctx context.Context, text string, voice Voice, lang Language, onChunk func([]byte) error) error
-	// Abort forces any in-progress synthesis to stop immediately.
-	// Implementations should try to unblock StreamSynthesize / Synthesize
-	// as quickly as possible (closing connections, cancelling streams, etc.).
 	Abort() error
 	Name() string
 }
@@ -75,7 +72,6 @@ const (
 	TranscriptPartial EventType = "TRANSCRIPT_PARTIAL"
 	TranscriptFinal   EventType = "TRANSCRIPT_FINAL"
 	BotThinking       EventType = "BOT_THINKING"
-	// BotResponse carries the assistant's textual response (payload is string)
 	BotResponse EventType = "BOT_RESPONSE"
 	BotSpeaking EventType = "BOT_SPEAKING"
 	Interrupted EventType = "INTERRUPTED"
@@ -128,9 +124,6 @@ type Config struct {
 	BytesPerSamp       int
 	MaxContextMessages int
 	VoiceStyle         Voice
-	// Minimum number of spoken words required for a user to interrupt the bot
-	// while the bot is mid-speech. When >1, interruptions are decided using
-	// STT transcripts (partial/final) instead of immediate VAD-based barge-in.
 	MinWordsToInterrupt int
 	Language            Language
 	STTTimeout          uint
@@ -145,7 +138,7 @@ func DefaultConfig() Config {
 		BytesPerSamp:        2,
 		MaxContextMessages:  20,
 		VoiceStyle:          VoiceF1,
-		MinWordsToInterrupt: 1, // default: immediate interruption on any user speech
+		MinWordsToInterrupt: 1, 
 		Language:            LanguageEn,
 		STTTimeout:          30,
 		LLMTimeout:          60,

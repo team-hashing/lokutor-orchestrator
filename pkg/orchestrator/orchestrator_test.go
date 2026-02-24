@@ -49,7 +49,6 @@ func (m *MockTTSProvider) StreamSynthesize(ctx context.Context, text string, voi
 }
 
 func (m *MockTTSProvider) Abort() error {
-	// test mock: nothing to abort, just succeed
 	return nil
 }
 
