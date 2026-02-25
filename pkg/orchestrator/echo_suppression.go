@@ -7,15 +7,15 @@ import (
 )
 
 type EchoSuppressor struct {
-	mu            sync.Mutex
-	playedSamples []float64 
-	writeIdx      int       
-	count         int       
-	maxSamples    int       
-	echoThreshold float64   
-	echoSilenceMS int       
-	lastTTSTime   time.Time 
-	enabled       bool
+	mu                     sync.Mutex
+	playedSamples          []float64
+	writeIdx               int
+	count                  int
+	maxSamples             int
+	echoThreshold          float64
+	echoSilenceMS          int
+	lastTTSTime            time.Time
+	enabled                bool
 	recentPlaybackWindowMS int
 
 	playbackSampleRate int
@@ -97,6 +97,14 @@ func NewEchoSuppressor() *EchoSuppressor {
 	return NewEchoSuppressorWithRates(44100, 44100)
 }
 
+func NewEchoSuppressorWithConfig(config Config) *EchoSuppressor {
+	es := NewEchoSuppressorWithRates(config.SampleRate, config.SampleRate)
+	if config.EchoSuppressionThreshold > 0 {
+		es.echoThreshold = config.EchoSuppressionThreshold
+	}
+	return es
+}
+
 func NewEchoSuppressorWithRates(playbackRate, inputRate int) *EchoSuppressor {
 	if playbackRate <= 0 {
 		playbackRate = 44100
@@ -108,8 +116,8 @@ func NewEchoSuppressorWithRates(playbackRate, inputRate int) *EchoSuppressor {
 	return &EchoSuppressor{
 		playedSamples:          make([]float64, maxSamples),
 		maxSamples:             maxSamples,
-		echoThreshold:          0.80, 
-		echoSilenceMS:          2000, 
+		echoThreshold:          0.80,
+		echoSilenceMS:          2000,
 		recentPlaybackWindowMS: 2000,
 		enabled:                true,
 		playbackSampleRate:     playbackRate,
@@ -167,7 +175,9 @@ func (es *EchoSuppressor) isEchoImpl(inputChunk []byte, fast bool) bool {
 
 	searchSize := es.count
 	if fast {
-		maxWindow := es.playbackSampleRate / 2
+		// macOS CoreAudio and Bluetooth devices can have up to 800-1200ms of playback queue delay
+		// so we need at least a 1.5s search window to catch the echo.
+		maxWindow := int(float64(es.playbackSampleRate) * 1.5)
 		if searchSize > maxWindow {
 			searchSize = maxWindow
 		}
@@ -393,7 +403,7 @@ func (es *EchoSuppressor) PostProcess(input []byte) []byte {
 
 	inputRate := es.inputSampleRate
 	if inputRate <= 0 {
-		inputRate = 44100 
+		inputRate = 44100
 	}
 	frameSamples := (inputRate * frameMs) / 1000
 	for i := 0; i < len(inputSamples); i += frameSamples {

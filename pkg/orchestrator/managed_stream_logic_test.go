@@ -92,10 +92,12 @@ func TestManagedStream_StaleAudioDiscard(t *testing.T) {
 	defer cancel()
 
 	ms := &ManagedStream{
-		events:  make(chan OrchestratorEvent, 10),
-		session: &ConversationSession{ID: "test"},
-		ctx:     ctx,
+		events:    make(chan OrchestratorEvent, 10),
+		session:   &ConversationSession{ID: "test"},
+		ctx:       ctx,
+		writeChan: make(chan []byte, 10),
 	}
+	go ms.processBackgroundAudio()
 
 	ms.isSpeaking = false
 	ms.emit(AudioChunk, []byte("stale"))
@@ -124,10 +126,12 @@ func TestManagedStream_EndToEndLatency(t *testing.T) {
 	defer cancel()
 
 	ms := &ManagedStream{
-		events:  make(chan OrchestratorEvent, 10),
-		session: &ConversationSession{ID: "test"},
-		ctx:     ctx,
+		events:    make(chan OrchestratorEvent, 10),
+		session:   &ConversationSession{ID: "test"},
+		ctx:       ctx,
+		writeChan: make(chan []byte, 10),
 	}
+	go ms.processBackgroundAudio()
 
 	base := time.Now()
 	start := base
@@ -148,21 +152,23 @@ func TestManagedStream_LatencyBreakdown(t *testing.T) {
 	defer cancel()
 
 	ms := &ManagedStream{
-		events:  make(chan OrchestratorEvent, 10),
-		session: &ConversationSession{ID: "test"},
-		ctx:     ctx,
+		events:    make(chan OrchestratorEvent, 10),
+		session:   &ConversationSession{ID: "test"},
+		ctx:       ctx,
+		writeChan: make(chan []byte, 10),
 	}
+	go ms.processBackgroundAudio()
 
 	base := time.Now()
 	ms.mu.Lock()
 	ms.userSpeechEndTime = base
 	ms.sttStartTime = base.Add(10 * time.Millisecond)
-	ms.sttEndTime = base.Add(110 * time.Millisecond) 
+	ms.sttEndTime = base.Add(110 * time.Millisecond)
 	ms.llmStartTime = base.Add(130 * time.Millisecond)
-	ms.llmEndTime = base.Add(380 * time.Millisecond) 
+	ms.llmEndTime = base.Add(380 * time.Millisecond)
 	ms.ttsStartTime = base.Add(400 * time.Millisecond)
-	ms.ttsFirstChunkTime = base.Add(520 * time.Millisecond) 
-	ms.ttsEndTime = base.Add(900 * time.Millisecond)        
+	ms.ttsFirstChunkTime = base.Add(520 * time.Millisecond)
+	ms.ttsEndTime = base.Add(900 * time.Millisecond)
 	ms.botSpeakStartTime = base.Add(395 * time.Millisecond)
 	ms.lastAudioSentAt = base.Add(525 * time.Millisecond)
 	ms.mu.Unlock()
@@ -203,10 +209,12 @@ func TestManagedStream_ExportLastUserAudio(t *testing.T) {
 	defer cancel()
 
 	ms := &ManagedStream{
-		events:  make(chan OrchestratorEvent, 10),
-		session: &ConversationSession{ID: "test"},
-		ctx:     ctx,
+		events:    make(chan OrchestratorEvent, 10),
+		session:   &ConversationSession{ID: "test"},
+		ctx:       ctx,
+		writeChan: make(chan []byte, 10),
 	}
+	go ms.processBackgroundAudio()
 
 	played := make([]byte, 44100/10*2)
 	for i := 0; i < len(played)-1; i += 2 {
@@ -272,10 +280,12 @@ func TestManagedStream_DropsEchoBeforeSTT(t *testing.T) {
 		ctx:            ctx,
 		echoSuppressor: NewEchoSuppressor(),
 		audioBuf:       new(bytes.Buffer),
+		writeChan:      make(chan []byte, 100),
 	}
+	go ms.processBackgroundAudio()
 	ms.vad = NewRMSVAD(0.02, 50*time.Millisecond)
 
-	played := make([]byte, 4410*2) 
+	played := make([]byte, 4410*2)
 	for i := 0; i < len(played)-1; i += 2 {
 		val := int16(8000)
 		played[i] = byte(val)
@@ -293,6 +303,9 @@ func TestManagedStream_DropsEchoBeforeSTT(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// Give the background worker a moment to process doWrite
+	time.Sleep(50 * time.Millisecond)
 
 	select {
 	case <-ch:

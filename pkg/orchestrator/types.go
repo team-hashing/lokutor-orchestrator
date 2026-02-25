@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 type Logger interface {
@@ -72,17 +73,18 @@ const (
 	TranscriptPartial EventType = "TRANSCRIPT_PARTIAL"
 	TranscriptFinal   EventType = "TRANSCRIPT_FINAL"
 	BotThinking       EventType = "BOT_THINKING"
-	BotResponse EventType = "BOT_RESPONSE"
-	BotSpeaking EventType = "BOT_SPEAKING"
-	Interrupted EventType = "INTERRUPTED"
-	AudioChunk  EventType = "AUDIO_CHUNK"
-	ErrorEvent  EventType = "ERROR"
+	BotResponse       EventType = "BOT_RESPONSE"
+	BotSpeaking       EventType = "BOT_SPEAKING"
+	Interrupted       EventType = "INTERRUPTED"
+	AudioChunk        EventType = "AUDIO_CHUNK"
+	ErrorEvent        EventType = "ERROR"
 )
 
 type OrchestratorEvent struct {
-	Type      EventType   `json:"type"`
-	SessionID string      `json:"session_id"`
-	Data      interface{} `json:"data,omitempty"`
+	Type       EventType   `json:"type"`
+	SessionID  string      `json:"session_id"`
+	Data       interface{} `json:"data,omitempty"`
+	Generation int         `json:"generation,omitempty"`
 }
 
 type Voice string
@@ -119,30 +121,36 @@ type Message struct {
 }
 
 type Config struct {
-	SampleRate         int
-	Channels           int
-	BytesPerSamp       int
-	MaxContextMessages int
-	VoiceStyle         Voice
-	MinWordsToInterrupt int
-	Language            Language
-	STTTimeout          uint
-	LLMTimeout          uint
-	TTSTimeout          uint
+	SampleRate               int
+	Channels                 int
+	BytesPerSamp             int
+	MaxContextMessages       int
+	VoiceStyle               Voice
+	MinWordsToInterrupt      int
+	Language                 Language
+	STTTimeout               uint
+	LLMTimeout               uint
+	TTSTimeout               uint
+	BargeInVADThreshold      float64
+	BargeInVADTrailWindow    time.Duration
+	EchoSuppressionThreshold float64
 }
 
 func DefaultConfig() Config {
 	return Config{
-		SampleRate:          44100,
-		Channels:            1,
-		BytesPerSamp:        2,
-		MaxContextMessages:  20,
-		VoiceStyle:          VoiceF1,
-		MinWordsToInterrupt: 1, 
-		Language:            LanguageEn,
-		STTTimeout:          30,
-		LLMTimeout:          60,
-		TTSTimeout:          30,
+		SampleRate:               44100,
+		Channels:                 1,
+		BytesPerSamp:             2,
+		MaxContextMessages:       20,
+		VoiceStyle:               VoiceF1,
+		MinWordsToInterrupt:      2,
+		Language:                 LanguageEn,
+		STTTimeout:               30,
+		LLMTimeout:               60,
+		TTSTimeout:               30,
+		BargeInVADThreshold:      0.005,
+		BargeInVADTrailWindow:    1500 * time.Millisecond,
+		EchoSuppressionThreshold: 0.82,
 	}
 }
 

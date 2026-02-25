@@ -116,18 +116,19 @@ func main() {
 		llm = llmProvider.NewGroqLLM(groqKey, "llama-3.3-70b-versatile")
 	}
 
+	config := orchestrator.DefaultConfig()
+	config.Language = lang
+
 	fmt.Printf("Configured: STT=%s | LLM=%s | TTS=Lokutor\n", sttProviderName, llmProviderName)
-	fmt.Printf("VAD Threshold: %.3f | Sample Rate: %dHz | Language: %s\n", 0.02, SampleRate, lang)
+	fmt.Printf("VAD Threshold: %.3f | Sample Rate: %dHz | Language: %s\n", config.BargeInVADThreshold, SampleRate, lang)
 	fmt.Println("Voice Agent Started! Listening to microphone...")
 	fmt.Println("Press Ctrl+C to exit")
 
 	tts := ttsProvider.NewLokutorTTS(lokutorKey)
 
-	vad := orchestrator.NewRMSVAD(0.025, 800*time.Millisecond)
-	vad.SetMinConfirmed(4)
-	config := orchestrator.DefaultConfig()
-	config.Language = lang
-	config.MinWordsToInterrupt = 1
+	vad := orchestrator.NewRMSVAD(config.BargeInVADThreshold, 800*time.Millisecond)
+	vad.SetMinConfirmed(2)
+
 	orch := orchestrator.NewWithVAD(stt, llm, tts, vad, config)
 
 	session := orch.NewSessionWithDefaults("user_123")
@@ -142,6 +143,7 @@ func main() {
 	defer cancel()
 
 	stream := orch.NewManagedStream(ctx, session)
+	stream.SetEchoSampleRates(SampleRate, SampleRate)
 	defer stream.Close()
 
 	mctx, err := malgo.InitContext(nil, malgo.ContextConfig{}, nil)
@@ -154,11 +156,11 @@ func main() {
 	var playbackBytes []byte
 	var e2eLogged bool
 	var preRolling bool = true
-	const preRollSize = 44100 * 2 * 200 / 1000 
+	const preRollSize = 44100 * 2 * 300 / 1000 // 300ms pre-roll
 
 	chunkPool := sync.Pool{
 		New: func() interface{} {
-			return make([]byte, 8192) 
+			return make([]byte, 8192)
 		},
 	}
 
@@ -190,48 +192,51 @@ func main() {
 		}
 
 		if pOutput != nil {
+			bytesToRead := int(frameCount) * 2
 			playbackMu.Lock()
-			audioLen := len(playbackBytes)
 
 			if preRolling {
-				if audioLen < preRollSize {
+				if len(playbackBytes) < preRollSize {
 					playbackMu.Unlock()
 					for i := range pOutput {
 						pOutput[i] = 0
 					}
+
+					// Record silence for AEC
+					buf := chunkPool.Get().([]byte)
+					nc := copy(buf, pOutput)
+					select {
+					case playedChan <- buf[:nc]:
+					default:
+						chunkPool.Put(buf)
+					}
 					return
 				}
 				preRolling = false
+
 			}
 
-			if audioLen == 0 {
-				playbackMu.Unlock()
+			if len(playbackBytes) == 0 {
+
 				for i := range pOutput {
 					pOutput[i] = 0
 				}
-				return
-			}
+			} else {
+				if len(playbackBytes) < bytesToRead {
 
-			bytesToCopy := len(pOutput)
-			if audioLen < bytesToCopy {
-				bytesToCopy = audioLen
-			}
-			bytesToCopy -= bytesToCopy % 2 
+					copy(pOutput, playbackBytes)
+					for i := len(playbackBytes); i < bytesToRead; i++ {
+						pOutput[i] = 0
+					}
+					playbackBytes = nil
+				} else {
 
-			n := copy(pOutput[:bytesToCopy], playbackBytes[:bytesToCopy])
-			playbackBytes = playbackBytes[n:]
-			playbackMu.Unlock()
-
-			if n > 0 {
-				buf := chunkPool.Get().([]byte)
-				nc := copy(buf, pOutput[:n])
-				select {
-				case playedChan <- buf[:nc]:
-				default:
-					chunkPool.Put(buf)
+					copy(pOutput, playbackBytes[:bytesToRead])
+					playbackBytes = playbackBytes[bytesToRead:]
 				}
+			}
 
-				stream.NotifyAudioPlayed()
+			if !preRolling {
 				if !e2eLogged {
 					bd := stream.GetLatencyBreakdown()
 					if bd.UserToPlay > 0 || bd.UserToTTSFirstByte > 0 || bd.UserToLLM > 0 || bd.UserToSTT > 0 {
@@ -240,12 +245,17 @@ func main() {
 						e2eLogged = true
 					}
 				}
+				stream.NotifyAudioPlayed()
 			}
+			playbackMu.Unlock()
 
-			if n < len(pOutput) {
-				for i := n; i < len(pOutput); i++ {
-					pOutput[i] = 0
-				}
+			// Record EVERYTHING we play (voice AND silence) so AEC timeline stays perfectly synchronized
+			buf := chunkPool.Get().([]byte)
+			nc := copy(buf, pOutput)
+			select {
+			case playedChan <- buf[:nc]:
+			default:
+				chunkPool.Put(buf)
 			}
 		}
 	}
@@ -271,18 +281,19 @@ func main() {
 	}
 
 	go func() {
+		currentGeneration := 0
 		for event := range stream.Events() {
 			switch event.Type {
-			case orchestrator.UserSpeaking, orchestrator.Interrupted:
+			case orchestrator.UserSpeaking:
+				fmt.Printf("\r\033[K🎤 [USER] Speaking...\n")
+
+			case orchestrator.Interrupted:
 				playbackMu.Lock()
 				playbackBytes = nil
 				preRolling = true
+				currentGeneration = event.Generation
 				playbackMu.Unlock()
-				if event.Type == orchestrator.UserSpeaking {
-					fmt.Printf("\r\033[K🎤 [USER] Speaking...\n")
-				} else {
-					fmt.Printf("\r\033[K🛑 [INTERRUPTED] User started talking.\n")
-				}
+				fmt.Printf("\r\033[K🛑 [INTERRUPTED] User started talking (gen: %d).\n", currentGeneration)
 
 			case orchestrator.UserStopped:
 				fmt.Printf("\r\033[K⌛ [STT] Processing...\n")
@@ -312,6 +323,10 @@ func main() {
 					fmt.Printf("\r\033[K🔊 [TTS] Speaking...\n")
 				}
 			case orchestrator.AudioChunk:
+				if event.Generation < currentGeneration {
+
+					continue
+				}
 				chunk := event.Data.([]byte)
 				playbackMu.Lock()
 				playbackBytes = append(playbackBytes, chunk...)
@@ -328,14 +343,7 @@ func main() {
 	sigReceived := <-sig
 	fmt.Printf("\nShutting down (signal=%v)...\n", sigReceived)
 
-	fmt.Println("debug: calling device.Stop()")
 	_ = device.Stop()
-	fmt.Println("debug: device.Stop() returned")
-
-	fmt.Println("debug: calling stream.Close()")
 	stream.Close()
-	fmt.Println("debug: stream.Close() returned")
-
 	time.Sleep(50 * time.Millisecond)
-	fmt.Println("debug: exiting main")
 }

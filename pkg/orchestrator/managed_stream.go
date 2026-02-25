@@ -23,30 +23,33 @@ type ManagedStream struct {
 	pipelineCtx       context.Context
 	pipelineCancel    context.CancelFunc
 	sttChan           chan<- []byte
-	sttGeneration     int 
+	sttGeneration     int
 	isSpeaking        bool
 	isThinking        bool
 	lastInterruptedAt time.Time
 	lastAudioSentAt   time.Time
-	userSpeechEndTime time.Time 
-	botSpeakStartTime time.Time 
+	userSpeechEndTime time.Time
+	botSpeakStartTime time.Time
 
 	lastUserAudio []byte
 
-	sttStartTime      time.Time 
-	sttEndTime        time.Time 
-	llmStartTime      time.Time 
-	llmEndTime        time.Time 
-	ttsStartTime      time.Time 
-	ttsFirstChunkTime time.Time 
-	ttsEndTime        time.Time 
+	sttStartTime      time.Time
+	sttEndTime        time.Time
+	llmStartTime      time.Time
+	llmEndTime        time.Time
+	ttsStartTime      time.Time
+	ttsFirstChunkTime time.Time
+	ttsEndTime        time.Time
 
 	responseCancel     context.CancelFunc
-	ttsCancel          context.CancelFunc 
-	userInterrupting   bool               
-	echoSuppressor     *EchoSuppressor    
-	lastAudioEmittedAt time.Time          
+	ttsCancel          context.CancelFunc
+	userInterrupting   bool
+	echoSuppressor     *EchoSuppressor
+	lastAudioEmittedAt time.Time
 	closeOnce          sync.Once
+
+	payloadGen int
+	writeChan  chan []byte
 }
 
 func NewManagedStream(ctx context.Context, o *Orchestrator, session *ConversationSession) *ManagedStream {
@@ -65,10 +68,24 @@ func NewManagedStream(ctx context.Context, o *Orchestrator, session *Conversatio
 		events:         make(chan OrchestratorEvent, 1024),
 		audioBuf:       new(bytes.Buffer),
 		vad:            streamVAD,
-		echoSuppressor: NewEchoSuppressor(),
+		echoSuppressor: NewEchoSuppressorWithConfig(o.GetConfig()),
+		writeChan:      make(chan []byte, 1024),
 	}
 
+	go ms.processBackgroundAudio()
+
 	return ms
+}
+
+func (ms *ManagedStream) processBackgroundAudio() {
+	for {
+		select {
+		case <-ms.ctx.Done():
+			return
+		case chunk := <-ms.writeChan:
+			ms.doWrite(chunk)
+		}
+	}
 }
 
 func (ms *ManagedStream) LastRMS() float64 {
@@ -115,10 +132,33 @@ func countWords(s string) int {
 const speechEndHold = 150 * time.Millisecond
 
 func (ms *ManagedStream) Write(chunk []byte) error {
+	select {
+	case ms.writeChan <- chunk:
+		return nil
+	default:
+		// Channel full, drop audio or log warning
+		return nil
+	}
+}
+
+func (ms *ManagedStream) doWrite(chunk []byte) error {
+	ms.mu.Lock()
+	if ms.ctx.Err() != nil {
+		ms.mu.Unlock()
+		return ms.ctx.Err()
+	}
+	ms.mu.Unlock()
+
 	if ms.vad == nil {
 		return fmt.Errorf("VAD not configured for this stream")
 	}
 
+	vadTrailWindow := 1500 * time.Millisecond
+	vadThreshold := 0.0
+	if ms.orch != nil {
+		vadTrailWindow = ms.orch.GetConfig().BargeInVADTrailWindow
+		vadThreshold = ms.orch.GetConfig().BargeInVADThreshold
+	}
 
 	if rmsVAD, ok := ms.vad.(*RMSVAD); ok {
 		originalThreshold := rmsVAD.Threshold()
@@ -130,13 +170,22 @@ func (ms *ManagedStream) Write(chunk []byte) error {
 		ms.mu.Unlock()
 
 		lastEmitted := ms.lastAudioEmittedAt
-		inTrail := time.Since(lastEmitted) < 1500*time.Millisecond
+		inTrail := time.Since(lastEmitted) < vadTrailWindow
 		if speaking || isThinking || inTrail {
-			if originalMinConfirmed > 2 {
-				rmsVAD.SetMinConfirmed(2)
+			// When the bot is active, we are MORE cautious to prevent self-interruption.
+			// We raise the threshold to at least 0.015, unless the base threshold is already higher.
+			target := 0.015
+			if vadThreshold > target {
+				target = vadThreshold
 			}
+			rmsVAD.SetThreshold(target)
+			rmsVAD.SetMinConfirmed(2)
 			rmsVAD.SetAdaptiveMode(false)
-			rmsVAD.SetThreshold(0.04)
+		} else {
+			// When idle, we use the base sensitivity (0.005).
+			rmsVAD.SetThreshold(vadThreshold)
+			rmsVAD.SetMinConfirmed(2)
+			rmsVAD.SetAdaptiveMode(true)
 		}
 
 		defer func() {
@@ -146,8 +195,25 @@ func (ms *ManagedStream) Write(chunk []byte) error {
 		}()
 	}
 
+	// Restore passive echo detection solely for debugging/logging purposes.
+	// It does NOT gate VAD events anymore.
+	isEcho := false
 	if ms.echoSuppressor != nil {
-		chunk = ms.echoSuppressor.RemoveEchoRealtime(chunk)
+		ms.mu.Lock()
+		lead := ms.audioBuf.Bytes()
+		ms.mu.Unlock()
+
+		leadBytes := 8820
+		if len(lead) > leadBytes {
+			lead = lead[len(lead)-leadBytes:]
+		}
+		checkBuf := make([]byte, 0, len(lead)+len(chunk))
+		checkBuf = append(checkBuf, lead...)
+		checkBuf = append(checkBuf, chunk...)
+
+		if ms.echoSuppressor.IsEchoFast(checkBuf) {
+			isEcho = true
+		}
 	}
 
 	event, err := ms.vad.Process(chunk)
@@ -156,72 +222,39 @@ func (ms *ManagedStream) Write(chunk []byte) error {
 	}
 
 	if event != nil && event.Type != VADSilence {
+
 		switch event.Type {
 		case VADSpeechStart:
+			// Pipecat/Vocode pattern: we trigger an immediate interrupt upon VAD detection
+			// unless it's a confirmed echo, to achieve high responsiveness.
+			if !isEcho {
+				ms.internalInterrupt()
+			}
+			ms.emit(UserSpeaking, nil)
+
 			ms.mu.Lock()
-			lead := ms.audioBuf.Bytes()
-			speaking := ms.isSpeaking
-			isThinking := ms.isThinking
-			lastEmitted := ms.lastAudioEmittedAt
+			ms.sttGeneration++
+			pipelineCancel := ms.pipelineCancel
+			ms.pipelineCancel = nil
+			ms.sttChan = nil
+
+			ms.sttStartTime = time.Now()
+			ms.sttEndTime = time.Time{}
+			ms.llmStartTime = time.Time{}
+			ms.llmEndTime = time.Time{}
+			ms.ttsStartTime = time.Time{}
+			ms.ttsFirstChunkTime = time.Time{}
+			ms.ttsEndTime = time.Time{}
+			ms.lastUserAudio = nil
 			ms.mu.Unlock()
 
-			leadBytes := 8820 
-			if len(lead) > leadBytes {
-				lead = lead[len(lead)-leadBytes:]
-			}
-			checkBuf := make([]byte, 0, len(lead)+len(chunk))
-			checkBuf = append(checkBuf, lead...)
-			checkBuf = append(checkBuf, chunk...)
-
-			isEcho := false
-			if ms.echoSuppressor != nil && ms.echoSuppressor.IsEchoFast(checkBuf) {
-				isEcho = true
+			if pipelineCancel != nil {
+				pipelineCancel()
 			}
 
-			canBargeIn := (speaking || isThinking || time.Since(lastEmitted) < 1500*time.Millisecond)
-
-			if canBargeIn && !isEcho {
-				ms.mu.Lock()
-				ms.userInterrupting = true
-				ms.sttGeneration++
-				pipelineCancel := ms.pipelineCancel
-				ms.pipelineCancel = nil
-				ms.sttChan = nil
-				ms.mu.Unlock()
-
-				if pipelineCancel != nil {
-					pipelineCancel()
-				}
-
-				ms.emit(UserSpeaking, nil)
-				ms.internalInterrupt()
-
-				if sProvider, ok := ms.orch.stt.(StreamingSTTProvider); ok {
-					ms.startStreamingSTT(sProvider)
-				}
-				break
+			if sProvider, ok := ms.orch.stt.(StreamingSTTProvider); ok {
+				ms.startStreamingSTT(sProvider)
 			}
-
-			if !isEcho {
-				ms.emit(UserSpeaking, nil)
-				ms.mu.Lock()
-				ms.sttStartTime = time.Now()
-				ms.sttEndTime = time.Time{}
-				ms.llmStartTime = time.Time{}
-				ms.llmEndTime = time.Time{}
-				ms.ttsStartTime = time.Time{}
-				ms.ttsFirstChunkTime = time.Time{}
-				ms.ttsEndTime = time.Time{}
-				ms.lastUserAudio = nil
-				ms.mu.Unlock()
-
-				ms.internalInterrupt()
-
-				if sProvider, ok := ms.orch.stt.(StreamingSTTProvider); ok {
-					ms.startStreamingSTT(sProvider)
-				}
-			}
-
 		case VADSpeechEnd:
 			ms.mu.Lock()
 			ms.userSpeechEndTime = time.Now()
@@ -338,40 +371,32 @@ func (ms *ManagedStream) startStreamingSTT(provider StreamingSTTProvider) {
 			return nil
 		}
 
-		if speaking {
-			minWords := 1
-			if ms.orch != nil {
-				minWords = ms.orch.GetConfig().MinWordsToInterrupt
-			}
+		ms.mu.Lock()
+		minWords := 1
+		if ms.orch != nil {
+			minWords = ms.orch.GetConfig().MinWordsToInterrupt
+		}
+		duration := time.Since(ms.sttStartTime)
+		ms.mu.Unlock()
 
+		if speaking || thinking {
+			wc := countWords(transcript)
 			if minWords > 1 {
-				wc := countWords(transcript)
 				if wc < minWords {
 					if !isFinal {
 						ms.emit(TranscriptPartial, transcript)
 					}
 					return nil
 				}
-				ms.mu.Lock()
-				duration := time.Since(ms.sttStartTime)
-				ms.mu.Unlock()
-				if !isLikelyNoise(transcript, duration) {
+				noise := isLikelyNoise(transcript, duration)
+				if !noise {
 					ms.internalInterrupt()
 				}
 			} else {
-				ms.mu.Lock()
-				duration := time.Since(ms.sttStartTime)
-				ms.mu.Unlock()
-				if strings.TrimSpace(transcript) != "" && !isLikelyNoise(transcript, duration) {
+				noise := isLikelyNoise(transcript, duration)
+				if strings.TrimSpace(transcript) != "" && !noise {
 					ms.internalInterrupt()
 				}
-			}
-		} else if thinking && strings.TrimSpace(transcript) != "" {
-			ms.mu.Lock()
-			duration := time.Since(ms.sttStartTime)
-			ms.mu.Unlock()
-			if !isLikelyNoise(transcript, duration) {
-				ms.internalInterrupt()
 			}
 		}
 
@@ -418,7 +443,7 @@ func (ms *ManagedStream) startStreamingSTT(provider StreamingSTTProvider) {
 }
 
 func (ms *ManagedStream) runBatchPipeline(audioData []byte) {
-	ms.internalInterrupt()
+	// DO NOT interrupt here. Wait for a valid transcript first!
 
 	ms.mu.Lock()
 	ctx, cancel := context.WithCancel(ms.ctx)
@@ -454,11 +479,21 @@ func (ms *ManagedStream) runBatchPipeline(audioData []byte) {
 
 	ms.mu.Lock()
 	speaking := ms.isSpeaking
+	thinking := ms.isThinking
 	ms.mu.Unlock()
-	if speaking && ms.orch != nil && ms.orch.GetConfig().MinWordsToInterrupt > 1 {
-		if countWords(transcript) < ms.orch.GetConfig().MinWordsToInterrupt {
+
+	if speaking {
+		minWords := 1
+		if ms.orch != nil {
+			minWords = ms.orch.GetConfig().MinWordsToInterrupt
+		}
+		if minWords > 1 && countWords(transcript) < minWords {
 			return
 		}
+		ms.internalInterrupt()
+	} else if thinking {
+		ms.internalInterrupt()
+	} else {
 		ms.internalInterrupt()
 	}
 
@@ -539,11 +574,20 @@ func (ms *ManagedStream) runLLMAndTTS(ctx context.Context, transcript string) {
 			if ms.ttsFirstChunkTime.IsZero() {
 				ms.ttsFirstChunkTime = time.Now()
 			}
+			gen := ms.payloadGen
 			ms.mu.Unlock()
 
-			ms.echoSuppressor.RecordPlayedAudio(chunk)
+			// Slice large chunks into ~20ms frames to prevent playback jitter/underflows
+			frameSize := 1764 // 44100Hz * 0.02s * 2 bytes
+			for i := 0; i < len(chunk); i += frameSize {
+				end := i + frameSize
+				if end > len(chunk) {
+					end = len(chunk)
+				}
+				c := chunk[i:end]
 
-			ms.emit(AudioChunk, chunk)
+				ms.emitWithGen(AudioChunk, c, gen)
+			}
 			return nil
 		}
 	})
@@ -595,15 +639,15 @@ func (ms *ManagedStream) GetLatency() int64 {
 }
 
 type LatencyBreakdown struct {
-	UserToSTT          int64 
-	STT                int64 
-	UserToLLM          int64 
-	LLM                int64 
-	UserToTTSFirstByte int64 
-	LLMToTTSFirstByte  int64 
-	TTSTotal           int64 
-	BotStartLatency    int64 
-	UserToPlay         int64 
+	UserToSTT          int64
+	STT                int64
+	UserToLLM          int64
+	LLM                int64
+	UserToTTSFirstByte int64
+	LLMToTTSFirstByte  int64
+	TTSTotal           int64
+	BotStartLatency    int64
+	UserToPlay         int64
 }
 
 func (ms *ManagedStream) GetEndToEndLatency() int64 {
@@ -707,6 +751,13 @@ func (ms *ManagedStream) Close() {
 }
 
 func (ms *ManagedStream) emit(eventType EventType, data interface{}) {
+	ms.mu.Lock()
+	gen := ms.payloadGen
+	ms.mu.Unlock()
+	ms.emitWithGen(eventType, data, gen)
+}
+
+func (ms *ManagedStream) emitWithGen(eventType EventType, data interface{}, gen int) {
 	select {
 	case <-ms.ctx.Done():
 		return
@@ -724,9 +775,10 @@ func (ms *ManagedStream) emit(eventType EventType, data interface{}) {
 	}
 
 	event := OrchestratorEvent{
-		Type:      eventType,
-		SessionID: ms.session.ID,
-		Data:      data,
+		Type:       eventType,
+		SessionID:  ms.session.ID,
+		Data:       data,
+		Generation: gen,
 	}
 
 	defer func() {
@@ -748,33 +800,30 @@ func (ms *ManagedStream) interrupt() {
 func (ms *ManagedStream) internalInterrupt() {
 	ms.mu.Lock()
 
-	recentActivity := time.Since(ms.lastAudioEmittedAt) < 1500*time.Millisecond
-	if ms.pipelineCancel == nil && ms.responseCancel == nil && ms.ttsCancel == nil && !ms.isSpeaking && !ms.isThinking && !ms.userInterrupting && !recentActivity {
+	// Check if there's anything to interrupt (TTS or LLM request)
+	// We allow a 1-second window after isSpeaking=false to account for audio in the playback buffer.
+	isStillPlaying := time.Since(ms.lastAudioSentAt) < time.Second
+
+	if ms.responseCancel == nil && ms.ttsCancel == nil && !ms.isSpeaking && !ms.isThinking && !ms.userInterrupting && !isStillPlaying {
 		ms.mu.Unlock()
 		return
 	}
 
-	pipelineCancel := ms.pipelineCancel
 	responseCancel := ms.responseCancel
 	ttsCancel := ms.ttsCancel
 
-	ms.pipelineCancel = nil
 	ms.responseCancel = nil
 	ms.ttsCancel = nil
-	ms.sttChan = nil
-	ms.sttGeneration++ 
-
 
 	ms.isSpeaking = false
 	ms.isThinking = false
 	ms.userInterrupting = false
+	ms.payloadGen++
+	gen := ms.payloadGen
 	ms.mu.Unlock()
 
 	ms.echoSuppressor.ClearEchoBuffer()
 
-	if pipelineCancel != nil {
-		pipelineCancel()
-	}
 	if responseCancel != nil {
 		responseCancel()
 	}
@@ -789,7 +838,7 @@ func (ms *ManagedStream) internalInterrupt() {
 	}
 
 	ms.lastInterruptedAt = time.Now()
-	ms.emit(Interrupted, nil)
+	ms.emitWithGen(Interrupted, nil, gen)
 	ms.drainAudioChunks()
 }
 
