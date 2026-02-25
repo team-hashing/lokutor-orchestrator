@@ -237,8 +237,6 @@ func (ms *ManagedStream) doWrite(chunk []byte) error {
 
 		switch event.Type {
 		case VADSpeechStart:
-			// Pipecat/Vocode pattern: we trigger an immediate interrupt upon VAD detection
-			// unless it's a confirmed echo, to achieve high responsiveness.
 			if !isEcho {
 				ms.internalInterrupt()
 			}
@@ -247,6 +245,7 @@ func (ms *ManagedStream) doWrite(chunk []byte) error {
 			ms.mu.Lock()
 			ms.sttGeneration++
 			pipelineCancel := ms.pipelineCancel
+			sttChan := ms.sttChan
 			ms.pipelineCancel = nil
 			ms.sttChan = nil
 
@@ -263,6 +262,9 @@ func (ms *ManagedStream) doWrite(chunk []byte) error {
 			if pipelineCancel != nil {
 				pipelineCancel()
 			}
+			if sttChan != nil {
+				close(sttChan)
+			}
 
 			if sProvider, ok := ms.orch.stt.(StreamingSTTProvider); ok {
 				ms.startStreamingSTT(sProvider)
@@ -278,6 +280,7 @@ func (ms *ManagedStream) doWrite(chunk []byte) error {
 			if sttChan != nil {
 				ms.sttChan = nil
 				ms.mu.Unlock()
+				close(sttChan)
 			} else {
 				audioData := make([]byte, ms.audioBuf.Len())
 				copy(audioData, ms.audioBuf.Bytes())
@@ -326,9 +329,7 @@ func (ms *ManagedStream) doWrite(chunk []byte) error {
 
 	ms.mu.Lock()
 	sttChan := ms.sttChan
-	if sttChan != nil {
-		ms.lastUserAudio = append(ms.lastUserAudio, chunk...)
-	}
+	ms.lastUserAudio = append(ms.lastUserAudio, chunk...)
 	ms.mu.Unlock()
 
 	if sttChan != nil {
@@ -424,6 +425,8 @@ func (ms *ManagedStream) startStreamingSTT(provider StreamingSTTProvider) {
 
 			ms.emit(TranscriptFinal, transcript)
 			ms.session.AddMessage("user", transcript)
+
+			go ms.runLLMAndTTS(ctx, transcript)
 		} else {
 			ms.emit(TranscriptPartial, transcript)
 		}
@@ -431,9 +434,14 @@ func (ms *ManagedStream) startStreamingSTT(provider StreamingSTTProvider) {
 	})
 
 	if err != nil {
-		ms.emit(ErrorEvent, fmt.Sprintf("failed to start streaming STT: %v", err))
-		cancel()
-		return
+		// Just log or emit a warning, do not cancel the whole pipeline
+		// because the orchestrator will gracefully fall back to batch Transcribe.
+		fmt.Printf("Warning: could not start streaming STT (falling back to batch): %v\n", err)
+	} else {
+		ms.mu.Lock()
+		ms.sttChan = sttChan
+		ms.pipelineCancel = cancel
+		ms.mu.Unlock()
 	}
 
 	ms.pipelineCtx = ctx
