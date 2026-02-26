@@ -50,6 +50,7 @@ type ManagedStream struct {
 
 	payloadGen int
 	writeChan  chan []byte
+	isClosed   bool
 }
 
 func NewManagedStream(ctx context.Context, o *Orchestrator, session *ConversationSession) *ManagedStream {
@@ -444,6 +445,7 @@ func (ms *ManagedStream) startStreamingSTT(provider StreamingSTTProvider) {
 		ms.mu.Unlock()
 	}
 
+	ms.mu.Lock()
 	ms.pipelineCtx = ctx
 	ms.pipelineCancel = cancel
 	ms.sttChan = sttChan
@@ -455,10 +457,13 @@ func (ms *ManagedStream) startStreamingSTT(provider StreamingSTTProvider) {
 		ms.lastUserAudio = make([]byte, len(data))
 		copy(ms.lastUserAudio, data)
 		ms.audioBuf.Reset()
+		ms.mu.Unlock()
 		select {
 		case sttChan <- data:
 		default:
 		}
+	} else {
+		ms.mu.Unlock()
 	}
 }
 
@@ -757,6 +762,7 @@ func (ms *ManagedStream) Close() {
 		ms.interrupt()
 
 		ms.mu.Lock()
+		ms.isClosed = true
 		ms.audioBuf.Reset()
 		ms.mu.Unlock()
 
@@ -766,7 +772,9 @@ func (ms *ManagedStream) Close() {
 
 		time.Sleep(10 * time.Millisecond)
 
+		ms.mu.Lock()
 		close(ms.events)
+		ms.mu.Unlock()
 	})
 }
 
@@ -784,12 +792,17 @@ func (ms *ManagedStream) emitWithGen(eventType EventType, data interface{}, gen 
 	default:
 	}
 
+	ms.mu.Lock()
+	if ms.isClosed {
+		ms.mu.Unlock()
+		return
+	}
+
 	if eventType == AudioChunk {
-		ms.mu.Lock()
 		speaking := ms.isSpeaking
 		userInterrupting := ms.userInterrupting
-		ms.mu.Unlock()
 		if !speaking || userInterrupting {
+			ms.mu.Unlock()
 			return
 		}
 	}
@@ -811,6 +824,7 @@ func (ms *ManagedStream) emitWithGen(eventType EventType, data interface{}, gen 
 	case <-ms.ctx.Done():
 	default:
 	}
+	ms.mu.Unlock()
 }
 
 func (ms *ManagedStream) interrupt() {
@@ -882,6 +896,11 @@ func (ms *ManagedStream) drainAudioChunks() {
 	}
 
 DrainDone:
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	if ms.isClosed {
+		return
+	}
 	for _, ev := range controlEvents {
 		select {
 		case ms.events <- ev:

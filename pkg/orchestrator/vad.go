@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"math"
+	"sync"
 	"time"
 )
 
@@ -18,6 +19,7 @@ type RMSVAD struct {
 	consecutiveFrames int
 	minConfirmed      int
 	lastRMS           float64
+	mu                sync.Mutex
 }
 
 func NewRMSVAD(threshold float64, silenceLimit time.Duration) *RMSVAD {
@@ -32,34 +34,51 @@ func NewRMSVAD(threshold float64, silenceLimit time.Duration) *RMSVAD {
 }
 
 func (v *RMSVAD) SetAdaptiveMode(enabled bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	v.adaptiveMode = enabled
 }
 
 func (v *RMSVAD) SetMinConfirmed(count int) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	v.minConfirmed = count
 }
 
 func (v *RMSVAD) MinConfirmed() int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	return v.minConfirmed
 }
 
 func (v *RMSVAD) SetThreshold(threshold float64) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	v.threshold = threshold
 }
 
 func (v *RMSVAD) Threshold() float64 {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	return v.threshold
 }
 
 func (v *RMSVAD) LastRMS() float64 {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	return v.lastRMS
 }
 
 func (v *RMSVAD) IsSpeaking() bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	return v.isSpeaking
 }
 
 func (v *RMSVAD) Process(chunk []byte) (*VADEvent, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
 	rms := v.calculateRMS(chunk)
 	v.lastRMS = rms
 	now := time.Now()
@@ -120,12 +139,16 @@ func (v *RMSVAD) Name() string {
 }
 
 func (v *RMSVAD) Reset() {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	v.isSpeaking = false
 	v.silenceStart = time.Time{}
 	v.consecutiveFrames = 0
 }
 
 func (v *RMSVAD) Clone() VADProvider {
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	return &RMSVAD{
 		threshold:    v.threshold,
 		silenceLimit: v.silenceLimit,
